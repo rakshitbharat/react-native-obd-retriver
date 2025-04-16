@@ -1,15 +1,16 @@
 # React Native OBD Retriever
 
-A React Native library for accessing raw OBD-II data from ELM327 adapters via Bluetooth Low Energy (BLE) connections. This library provides direct access to the raw bytes received from the ELM327 device without any interpretation or conversion.
+A React Native library for accessing raw OBD-II data from ELM327 adapters via Bluetooth Low Energy (BLE) connections. This library provides direct access to the raw data received from the ELM327 device without interpretation or conversion, giving you complete control over how to display or process the information.
 
 ## Features
 
 - 🚗 Direct BLE communication with ELM327 OBD-II adapters
-- 📊 Raw data access from OBD-II protocols
-- 🔍 Direct access to raw DTC bytes
-- 🔄 Raw command interface for ELM327
-- 📱 iOS and Android support
-- ⚡ TypeScript support
+- 📊 Raw data access from various OBD-II protocols (CAN, ISO9141, KWP, J1850)
+- 🔍 Raw DTC data retrieval (Mode 03, 07, 0A)
+- 🧩 ECU protocol detection and adaptation
+- 🔄 Command interface for ELM327 with proper timing and retry logic
+- 📱 iOS and Android support via BLE
+- ⚡ Complete TypeScript support
 
 ## Installation
 
@@ -34,46 +35,96 @@ npm install react-native-bluetooth-obd-manager react-native-permissions
 yarn add react-native-bluetooth-obd-manager react-native-permissions
 ```
 
-## Usage
+## Quick Start
 
-1. Initialize the BLE connection:
+### 1. Set up providers
+
+Wrap your application with the required providers:
+
+```jsx
+import { BluetoothProvider } from 'react-native-bluetooth-obd-manager';
+import { ECUProvider } from 'react-native-obd-retriver';
+
+function App() {
+  return (
+    <BluetoothProvider>
+      <ECUProvider>
+        <YourApp />
+      </ECUProvider>
+    </BluetoothProvider>
+  );
+}
+```
+
+### 2. Connect to ECU
 
 ```typescript
 import { useECU } from 'react-native-obd-retriver';
 
-const MyComponent = () => {
-  const { connect, disconnect, isConnected } = useECU();
-
-  // Connect to OBD adapter
-  const handleConnect = async () => {
-    try {
-      await connect();
-    } catch (error) {
-      console.error('Failed to connect:', error);
-    }
-  };
+const ConnectionComponent = () => {
+  const { state, connectWithECU, disconnectECU } = useECU();
+  
+  return (
+    <View>
+      <Text>Status: {state.status}</Text>
+      <Button
+        title={state.status === 'CONNECTED' ? 'Disconnect' : 'Connect'}
+        onPress={state.status === 'CONNECTED' ? disconnectECU : connectWithECU}
+      />
+    </View>
+  );
 };
 ```
 
-2. Get raw DTC data:
+### 3. Retrieve Raw DTC Data
 
 ```typescript
 import { useDTCRetriever } from 'react-native-obd-retriver';
 
-const DiagnosticsComponent = () => {
-  const { getRawDTCResponse, sendRawCommand } = useDTCRetriever();
-
-  const handleGetDTCs = async () => {
+const DTCComponent = () => {
+  const { get03DTCObject, get07DTCObject, get0ADTCObject } = useDTCRetriever();
+  const [currentDTCs, setCurrentDTCs] = useState(null);
+  
+  const fetchCurrentDTCs = async () => {
     try {
-      // Returns raw bytes from Mode 03 (Current DTCs)
-      const rawResponse = await getRawDTCResponse('03');
-      console.debug('Raw DTC Response:', rawResponse);
+      // Raw DTC data from Mode 03 (Current DTCs)
+      const rawDTCs = await get03DTCObject();
+      setCurrentDTCs(rawDTCs);
     } catch (error) {
       console.error('Failed to retrieve raw DTC data:', error);
     }
   };
+  
+  return (
+    <View>
+      <Button title="Get Current DTCs" onPress={fetchCurrentDTCs} />
+      {currentDTCs && (
+        <Text>
+          Raw DTC data: {currentDTCs.rawString}
+        </Text>
+      )}
+    </View>
+  );
 };
 ```
+
+## Core Concepts
+
+### ECU Connection
+
+The library manages the connection to the vehicle's ECU through the ELM327 adapter:
+
+- **Connection State**: Tracks the current connection status (`DISCONNECTED`, `CONNECTING`, `CONNECTED`, `CONNECTION_FAILED`)
+- **Protocol Detection**: Automatically detects and configures the appropriate OBD protocol
+- **ECU Information**: Provides protocol details, voltage information, and detected ECU addresses
+
+### Raw Data Access
+
+All data from the vehicle is provided in raw format with no interpretation:
+
+- **Raw DTC Data**: Access to complete raw data from the three DTC modes (03, 07, 0A)
+- **VIN Retrieval**: Get the raw VIN string from the vehicle
+- **Direct Commands**: Send any command directly to the ELM327 adapter
 
 ## API Reference
 
@@ -81,52 +132,81 @@ const DiagnosticsComponent = () => {
 
 #### `useECU()`
 
-Core hook for BLE connection management with ELM327.
+Core hook for ECU connection management with the following functionality:
 
-- `connect()`: Initiates BLE connection to the OBD adapter
-- `disconnect()`: Disconnects from the OBD adapter
-- `isConnected`: Boolean indicating connection status
-- `error`: Any connection-related error
-- `sendRawCommand(command: string)`: Send raw command to ELM327
+```typescript
+const {
+  state,                  // Current ECU state
+  connectWithECU,         // Connect to ECU
+  disconnectECU,          // Disconnect from ECU
+  getECUInformation,      // Update ECU information (voltage, etc.)
+  getActiveProtocol,      // Get active protocol information
+  getVIN,                 // Get raw VIN string
+  clearDTCs,              // Clear DTCs (Mode 04)
+  getRawCurrentDTCs,      // Get raw current DTCs
+  getRawPendingDTCs,      // Get raw pending DTCs
+  getRawPermanentDTCs,    // Get raw permanent DTCs
+  sendCommand,            // Send raw command to adapter
+} = useECU();
+```
 
 #### `useDTCRetriever()`
 
-Hook for retrieving raw DTC data.
+Specialized hook for retrieving raw DTC data:
 
-- `getRawDTCResponse(mode: string)`: Get raw bytes from DTC modes
-- `sendRawCommand(command: string)`: Send raw command to ELM327
+```typescript
+const {
+  get03DTCObject,         // Get raw current DTCs (Mode 03)
+  get07DTCObject,         // Get raw pending DTCs (Mode 07)
+  get0ADTCObject,         // Get raw permanent DTCs (Mode 0A)
+} = useDTCRetriever();
+```
 
-### Data Format
+### Raw DTC Response Format
 
-All data is returned as raw byte arrays exactly as received from the ELM327 device. No interpretation or conversion is performed. Users are responsible for parsing and interpreting the data according to OBD-II standards.
-
-Example raw response format:
+The `RawDTCResponse` object contains:
 
 ```typescript
 {
-  rawBytes: Uint8Array, // Raw bytes received from ELM327
-  timestamp: number     // Timestamp of when data was received
+  rawString: string | null,                  // Raw string response
+  rawResponse: number[] | null,              // Response as number array
+  response: string[][] | null,               // Parsed response structure
+  rawBytesResponseFromSendCommand: string[], // Raw bytes from adapter
+  isCan: boolean,                            // Whether CAN protocol is used
+  protocolNumber: number,                    // Protocol number
+  ecuAddress: string | undefined,            // ECU address if available
 }
 ```
+
+## Examples
+
+See the `src/examples` directory for complete working examples:
+
+- **DTCManagerExample**: Display raw DTC data from all modes
+- **ClearDTCExample**: Clear DTCs and verify they're gone
+- **VINRetrievalExample**: Get and display VIN information
+- **LiveDataExample**: Monitor real-time vehicle data
+- **CustomCommandExample**: Send custom commands to the adapter
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. Bluetooth Connection Problems
+1. **Bluetooth Connection Problems**
+   - Ensure Bluetooth is enabled and permissions are granted
+   - Verify the adapter is powered and in range
+   - Check that the adapter is ELM327 compatible
 
-   - Ensure Bluetooth permissions are granted
-   - Check if the device supports Bluetooth LE
-   - Verify the OBD adapter is ELM327 compatible
+2. **Protocol Detection Issues**
+   - Some vehicles require the engine to be running
+   - Try connecting with the ignition on but engine off first
+   - Some older vehicles may need specific protocols selected manually
 
-2. Raw Data Issues
-   - Ensure correct command format is used
-   - Verify adapter response timing
-   - Check ELM327 initialization parameters
+3. **Data Retrieval Problems**
+   - Some vehicles don't support all OBD modes
+   - Command timing may need adjustment for certain vehicles
+   - Verify the ELM327 firmware version is compatible
 
-## Supported Hardware
+## License
 
-This library supports:
-
-- ELM327 compatible adapters
-- Bluetooth Low Energy (BLE) capable devices
+MIT
