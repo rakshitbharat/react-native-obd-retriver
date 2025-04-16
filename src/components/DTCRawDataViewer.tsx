@@ -40,13 +40,13 @@ export const DTCRawDataViewer: React.FC<DTCRawDataViewerProps> = ({
           {/* Display raw string response if available */}
           <Text style={styles.label}>Raw String Response:</Text>
           <Text style={styles.value}>{data.rawString || 'N/A'}</Text>
-          
+
           {/* Display raw numeric response if available */}
           <Text style={styles.label}>Raw Response:</Text>
           <Text style={styles.value}>
             {data.rawResponse ? JSON.stringify(data.rawResponse) : 'N/A'}
           </Text>
-          
+
           {/* Display parsed response if available */}
           {data.response && (
             <>
@@ -54,20 +54,22 @@ export const DTCRawDataViewer: React.FC<DTCRawDataViewerProps> = ({
               <Text style={styles.value}>{JSON.stringify(data.response)}</Text>
             </>
           )}
-          
+
           {/* Display raw bytes response from send command */}
           <Text style={styles.label}>Raw Bytes Response:</Text>
           <Text style={styles.value}>
-            {data.rawBytesResponseFromSendCommand 
-              ? JSON.stringify(data.rawBytesResponseFromSendCommand) 
+            {data.rawBytesResponseFromSendCommand
+              ? JSON.stringify(data.rawBytesResponseFromSendCommand)
               : 'N/A'}
           </Text>
-          
+
           {/* Display protocol information */}
           <Text style={styles.label}>Protocol Information:</Text>
           <Text style={styles.value}>
-            Protocol: {data.protocolNumber || 'Unknown'}{'\n'}
-            Is CAN: {data.isCan ? 'Yes' : 'No'}{'\n'}
+            Protocol: {data.protocolNumber || 'Unknown'}
+            {'\n'}
+            Is CAN: {data.isCan ? 'Yes' : 'No'}
+            {'\n'}
             ECU Address: {data.ecuAddress || 'N/A'}
           </Text>
         </View>

@@ -7,16 +7,17 @@ import { ECUConnectionStatus } from '../ecu/utils/constants';
 import type { JSX } from 'react';
 
 export const VINRetrievalExample: React.FC = (): JSX.Element => {
-  const { state, connectWithECU, disconnectECU, getVIN, getECUInformation } = useECU();
-  
+  const { state, connectWithECU, disconnectECU, getVIN, getECUInformation } =
+    useECU();
+
   const [vinResponse, setVinResponse] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
-  
+
   const fetchVIN = useCallback(async () => {
     setLoading(true);
     setLastError(null);
-    
+
     try {
       const rawVIN = await getVIN();
       setVinResponse(rawVIN);
@@ -26,11 +27,11 @@ export const VINRetrievalExample: React.FC = (): JSX.Element => {
       setLoading(false);
     }
   }, [getVIN]);
-  
+
   const updateECUInfo = useCallback(async () => {
     setLoading(true);
     setLastError(null);
-    
+
     try {
       await getECUInformation();
     } catch (error) {
@@ -39,50 +40,51 @@ export const VINRetrievalExample: React.FC = (): JSX.Element => {
       setLoading(false);
     }
   }, [getECUInformation]);
-  
+
   const isConnected = state.status === ECUConnectionStatus.CONNECTED;
-  
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>VIN Retrieval Example</Text>
-      
+
       <View style={styles.statusContainer}>
         <Text style={styles.label}>Status:</Text>
         <Text style={styles.value}>{state.status}</Text>
       </View>
-      
+
       {isConnected && (
         <>
           <View style={styles.infoContainer}>
             <Text style={styles.infoTitle}>ECU Information:</Text>
-            
+
             <View style={styles.infoRow}>
               <Text style={styles.label}>Protocol:</Text>
               <Text style={styles.value}>
                 {state.protocolName || state.activeProtocol || 'Unknown'}
               </Text>
             </View>
-            
+
             <View style={styles.infoRow}>
               <Text style={styles.label}>Voltage:</Text>
               <Text style={styles.value}>
                 {state.deviceVoltage || 'Unknown'}
               </Text>
             </View>
-            
+
             <View style={styles.infoRow}>
               <Text style={styles.label}>ECU Addresses:</Text>
               <Text style={styles.value}>
-                {state.detectedEcuAddresses && state.detectedEcuAddresses.length > 0
+                {state.detectedEcuAddresses &&
+                state.detectedEcuAddresses.length > 0
                   ? state.detectedEcuAddresses.join(', ')
                   : 'None detected'}
               </Text>
             </View>
           </View>
-          
+
           <View style={styles.vinContainer}>
             <Text style={styles.infoTitle}>VIN Response:</Text>
-            
+
             {loading ? (
               <Text>Loading...</Text>
             ) : vinResponse ? (
@@ -93,23 +95,23 @@ export const VINRetrievalExample: React.FC = (): JSX.Element => {
           </View>
         </>
       )}
-      
+
       {state.lastError && (
         <Text style={styles.errorText}>Error: {state.lastError}</Text>
       )}
-      
+
       {lastError && (
         <Text style={styles.errorText}>Operation Error: {lastError}</Text>
       )}
-      
+
       <View style={styles.buttonsContainer}>
         <Button
-          title={isConnected ? "Disconnect ECU" : "Connect ECU"}
+          title={isConnected ? 'Disconnect ECU' : 'Connect ECU'}
           onPress={isConnected ? disconnectECU : connectWithECU}
           disabled={state.status === ECUConnectionStatus.CONNECTING}
         />
       </View>
-      
+
       <View style={styles.buttonsContainer}>
         <Button
           title="Get VIN"

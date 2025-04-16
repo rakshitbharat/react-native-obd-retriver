@@ -12,18 +12,18 @@ import type { JSX } from 'react';
 export const ClearDTCExample: React.FC = (): JSX.Element => {
   const { state, connectWithECU, disconnectECU, clearDTCs } = useECU();
   const { get03DTCObject } = useDTCRetriever();
-  
+
   const [currentDTCs, setCurrentDTCs] = useState<RawDTCResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastOperation, setLastOperation] = useState<string | null>(null);
-  
+
   const fetchCurrentDTCs = useCallback(async () => {
     setLoading(true);
     setLastError(null);
     setLastOperation('Fetching Current DTCs');
-    
+
     try {
       const result = await get03DTCObject();
       setCurrentDTCs(result);
@@ -34,16 +34,18 @@ export const ClearDTCExample: React.FC = (): JSX.Element => {
       setLoading(false);
     }
   }, [get03DTCObject]);
-  
+
   const handleClearDTCs = useCallback(async () => {
     setClearing(true);
     setLastError(null);
     setLastOperation('Clearing DTCs');
-    
+
     try {
       const success = await clearDTCs();
-      setLastOperation(success ? 'DTCs cleared successfully' : 'DTC clear failed');
-      
+      setLastOperation(
+        success ? 'DTCs cleared successfully' : 'DTC clear failed',
+      );
+
       if (success) {
         // Re-fetch DTCs after clearing
         await fetchCurrentDTCs();
@@ -54,38 +56,38 @@ export const ClearDTCExample: React.FC = (): JSX.Element => {
       setClearing(false);
     }
   }, [clearDTCs, fetchCurrentDTCs]);
-  
+
   const isConnected = state.status === ECUConnectionStatus.CONNECTED;
-  
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>Clear DTC Example</Text>
-      
+
       <View style={styles.statusContainer}>
         <Text style={styles.statusLabel}>Status:</Text>
         <Text style={styles.statusValue}>{state.status}</Text>
       </View>
-      
+
       {state.lastError && (
         <Text style={styles.errorText}>Error: {state.lastError}</Text>
       )}
-      
+
       {lastError && (
         <Text style={styles.errorText}>Operation Error: {lastError}</Text>
       )}
-      
+
       {lastOperation && (
         <Text style={styles.operationText}>Last Action: {lastOperation}</Text>
       )}
-      
+
       <View style={styles.buttonsContainer}>
         <Button
-          title={isConnected ? "Disconnect ECU" : "Connect ECU"}
+          title={isConnected ? 'Disconnect ECU' : 'Connect ECU'}
           onPress={isConnected ? disconnectECU : connectWithECU}
           disabled={state.status === ECUConnectionStatus.CONNECTING}
         />
       </View>
-      
+
       <View style={styles.buttonsContainer}>
         <Button
           title="Fetch Current DTCs"
@@ -98,8 +100,8 @@ export const ClearDTCExample: React.FC = (): JSX.Element => {
           disabled={!isConnected || clearing || loading}
         />
       </View>
-      
-      <DTCRawDataViewer 
+
+      <DTCRawDataViewer
         title="Current DTCs (Mode 03) Raw Data"
         data={currentDTCs}
         loading={loading}
