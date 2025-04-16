@@ -12,7 +12,6 @@ import { BluetoothProvider } from 'react-native-bluetooth-obd-manager';
 import { ECUProvider } from './ecu';
 import {
   ClearDTCExample,
-  CustomCommandExample,
   DTCManagerExample,
   LiveDataExample,
   VINRetrievalExample,
@@ -32,8 +31,6 @@ export const App = (): JSX.Element => {
         return <VINRetrievalExample />;
       case 'livedata':
         return <LiveDataExample />;
-      case 'custom':
-        return <CustomCommandExample />;
       case 'cleardtc':
         return <ClearDTCExample />;
       case null:
