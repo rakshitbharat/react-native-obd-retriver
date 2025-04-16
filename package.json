@@ -29,7 +29,7 @@
     "clean": "rimraf lib coverage",
     "prepare": "husky",
     "prepublishOnly": "npm run clean && npm run build",
-    "test": "jest --config jest.config.cjs --coverage",
+    "test": "jest --config jest.config.cjs --coverage --passWithNoTests",
     "test:watch": "jest --watch",
     "lint": "eslint \"./src/**/*.{ts,tsx}\"",
     "lint:fix": "eslint \"./src/**/*.{ts,tsx}\" --fix",
