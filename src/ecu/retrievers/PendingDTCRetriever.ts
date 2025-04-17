@@ -7,32 +7,32 @@ import type { SendCommandFunction } from '../utils/types';
 
 /**
  * Specializes in retrieving pending/intermittent Diagnostic Trouble Codes
- * 
+ *
  * The PendingDTCRetriever class uses OBD Service Mode 07 to retrieve pending DTCs
- * from the vehicle's diagnostic system. These are codes for issues that have been 
+ * from the vehicle's diagnostic system. These are codes for issues that have been
  * detected but haven't yet triggered the Malfunction Indicator Light (MIL).
- * 
+ *
  * Key features:
  * - Retrieves pending/intermittent fault codes
  * - Uses OBD service mode 07 (0x07)
  * - Helps identify developing problems before they become active DTCs
  * - Works across all OBD-II compliant vehicles that support Mode 07
  * - Provides early diagnostic indications
- * 
+ *
  * Pending DTCs are especially valuable for:
  * - Preventative maintenance
  * - Detecting intermittent issues
  * - Verifying repairs before clearing active DTCs
  * - Monitoring borderline component performance
- * 
+ *
  * @example
  * ```typescript
  * // Create a retriever instance
  * const pendingRetriever = new PendingDTCRetriever(sendCommand);
- * 
+ *
  * // Retrieve and parse pending DTCs
  * const dtcResponse = await pendingRetriever.retrieveRawDTCs();
- * 
+ *
  * if (dtcResponse) {
  *   if (dtcResponse.troubleCodes && dtcResponse.troubleCodes.length > 0) {
  *     console.log(`Found ${dtcResponse.troubleCodes.length} pending DTCs:`);

@@ -6,26 +6,26 @@ import type { ECUContextValue } from '../utils/types';
 
 /**
  * Core hook for accessing ECU functionality in React components
- * 
+ *
  * This hook provides access to all ECU communication features, including:
  * - Connection management
  * - Protocol information
  * - Vehicle data retrieval (VIN, DTCs, etc.)
  * - Raw command execution
- * 
+ *
  * @example
  * ```tsx
  * import { useECU } from 'react-native-obd-retriver';
- * 
+ *
  * function VehicleMonitor() {
- *   const { 
- *     state, 
- *     connectWithECU, 
+ *   const {
+ *     state,
+ *     connectWithECU,
  *     disconnectECU,
  *     getVIN,
- *     getRawCurrentDTCs 
+ *     getRawCurrentDTCs
  *   } = useECU();
- *   
+ *
  *   const handleConnect = async () => {
  *     const success = await connectWithECU();
  *     if (success) {
@@ -34,11 +34,11 @@ import type { ECUContextValue } from '../utils/types';
  *       console.log(`Voltage: ${state.deviceVoltage}`);
  *     }
  *   };
- *   
+ *
  *   // Component rendering and other handlers...
  * }
  * ```
- * 
+ *
  * @returns All ECU functionality exposed by the ECUContext
  * @throws Error if used outside of an ECUProvider
  */

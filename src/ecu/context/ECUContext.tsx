@@ -37,13 +37,13 @@ import type {
 
 /**
  * React Context for ECU communication
- * 
+ *
  * This context provides access to all ECU-related functionality including:
  * - Connection management (connect/disconnect)
  * - State information (connection status, protocol, voltage)
  * - Vehicle data retrieval (VIN, DTCs)
  * - Raw command execution
- * 
+ *
  * @example
  * ```tsx
  * // Consuming the context directly (usually prefer useECU hook instead)
@@ -52,7 +52,7 @@ import type {
  *     <ECUContext.Consumer>
  *       {(ecuContext) => {
  *         if (!ecuContext) return <Text>No ECU context available</Text>;
- *         
+ *
  *         const { state } = ecuContext;
  *         return (
  *           <View>
@@ -79,18 +79,18 @@ interface ECUProviderProps {
 
 /**
  * Provider component for ECU communication
- * 
+ *
  * This component creates the ECU context and provides all ECU-related
  * functionality to its children components. It manages the ECU connection
  * state and provides methods for interacting with the vehicle's ECU.
- * 
+ *
  * Must be placed within a BluetoothProvider from react-native-bluetooth-obd-manager.
- * 
+ *
  * @example
  * ```tsx
  * import { ECUProvider } from 'react-native-obd-retriver';
  * import { BluetoothProvider } from 'react-native-bluetooth-obd-manager';
- * 
+ *
  * function App() {
  *   return (
  *     <BluetoothProvider>
