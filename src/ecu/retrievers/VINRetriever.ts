@@ -47,9 +47,46 @@ const PROTOCOL_STATES = {
 type ProtocolState = (typeof PROTOCOL_STATES)[keyof typeof PROTOCOL_STATES]; // Derive type
 
 /**
- * Retrieves the Vehicle Identification Number (VIN) using Mode 09 PID 02.
- * This class is now standalone and includes its own adapter configuration,
- * protocol detection, and enhanced flow control handling logic.
+ * Retrieves the Vehicle Identification Number (VIN) from the vehicle
+ *
+ * The VINRetriever class specializes in retrieving the 17-character VIN
+ * from vehicle ECUs using OBD Mode 09 PID 02. This class handles:
+ *
+ * - Adapter configuration for optimal VIN retrieval
+ * - Protocol detection and adjustment
+ * - Multi-frame response handling
+ * - Flow control on CAN-based protocols
+ * - Parsing and validation of VIN data
+ * - Automatic retries with different settings
+ *
+ * The VIN is a crucial vehicle identifier containing encoded information about:
+ * - Manufacturer/make (first 3 characters)
+ * - Vehicle attributes (positions 4-8)
+ * - Check digit validation (position 9)
+ * - Model year (position 10)
+ * - Plant code (position 11)
+ * - Production sequence number (last 6 digits)
+ *
+ * This class is standalone and includes its own adapter configuration,
+ * protocol detection, and enhanced flow control handling logic. It's designed
+ * to work reliably across different vehicle makes, models, and OBD protocols.
+ *
+ * @example
+ * ```typescript
+ * // Create a VIN retriever instance
+ * const vinRetriever = new VINRetriever(sendCommand);
+ *
+ * // Retrieve the vehicle's VIN
+ * const vin = await vinRetriever.retrieveVIN();
+ *
+ * if (vin) {
+ *   console.log(`Vehicle VIN: ${vin}`); // e.g. "1HGCM82633A123456"
+ *   console.log(`Manufacturer: ${vin.substring(0,3)}`); // e.g. "1HG" (Honda)
+ *   console.log(`Model Year: ${decodeModelYear(vin.charAt(9))}`); // e.g. "2003"
+ * } else {
+ *   console.error("Unable to retrieve VIN");
+ * }
+ * ```
  */
 export class VINRetriever {
   // Service mode details for VIN retrieval

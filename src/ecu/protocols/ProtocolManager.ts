@@ -21,18 +21,55 @@ import type { SendCommandFunction } from '../utils/types';
 const PROTOCOL_TEST_COMMAND = STANDARD_PIDS.SUPPORTED_PIDS_1;
 
 /**
- * Manages OBD protocol detection and setup.
+ * Manages OBD protocol detection, initialization, and communication setup
+ *
+ * This class handles the complex process of detecting the appropriate OBD protocol
+ * for a vehicle and configuring the ELM adapter accordingly. It implements intelligent
+ * protocol detection strategies based on priority order and vehicle compatibility.
+ *
+ * Key features:
+ * - Auto protocol detection
+ * - Specific protocol testing in priority order
+ * - Protocol validation with standard test commands
+ * - ECU address detection
+ * - Protocol-specific adapter configuration
+ *
  * Based on logic from ElmProtocol, ElmProtocolHelper, ElmProtocolInit.
+ *
+ * @example
+ * ```typescript
+ * // Create a protocol manager with a sendCommand function
+ * const protocolManager = new ProtocolManager(sendCommand);
+ *
+ * // Attempt automatic protocol detection
+ * const result = await protocolManager.detectProtocol();
+ *
+ * if (result.success) {
+ *   console.log(`Detected protocol: ${result.protocolName} (${result.protocol})`);
+ *   console.log(`ECU addresses: ${result.ecuAddresses.join(', ')}`);
+ * } else {
+ *   console.error(`Protocol detection failed: ${result.error}`);
+ * }
+ * ```
  */
 export class ProtocolManager {
+  /** Function to send commands to the OBD adapter */
   private readonly sendCommand: SendCommandFunction;
 
+  /**
+   * Creates a new ProtocolManager instance
+   *
+   * @param sendCommand - Function to send commands to the OBD adapter
+   */
   constructor(sendCommand: SendCommandFunction) {
     this.sendCommand = sendCommand;
   }
 
   /**
-   * Helper method to create a delay.
+   * Helper method to create a delay
+   *
+   * @param ms - Delay duration in milliseconds
+   * @returns Promise that resolves after the specified delay
    */
   private delay(ms: number): Promise<void> {
     return new Promise<void>(resolve => {
@@ -41,7 +78,22 @@ export class ProtocolManager {
   }
 
   /**
-   * Gets the currently active protocol number from the ELM327 adapter using ATDPN.
+   * Gets the currently active protocol number from the ELM327 adapter
+   *
+   * Sends the ATDPN command to retrieve the currently active protocol
+   * number from the adapter. This is useful for verifying protocol
+   * settings or checking if a protocol was automatically detected.
+   *
+   * @returns Promise resolving to the active protocol as a PROTOCOL enum value, or null if unknown
+   * @example
+   * ```typescript
+   * const protocol = await protocolManager.getCurrentProtocolNumber();
+   * if (protocol !== null) {
+   *   console.log(`Active protocol: ${PROTOCOL_DESCRIPTIONS[protocol]}`);
+   * } else {
+   *   console.log("No active protocol detected");
+   * }
+   * ```
    */
   async getCurrentProtocolNumber(): Promise<PROTOCOL | null> {
     await log.debug(
@@ -76,9 +128,37 @@ export class ProtocolManager {
   }
 
   /**
-   * Attempts to automatically detect and set the correct OBD protocol.
-   * Iterates through PROTOCOL_TRY_ORDER.
+   * Detects and sets the appropriate OBD protocol for vehicle communication
+   *
+   * This method implements a sophisticated protocol detection strategy:
+   * 1. First attempts automatic protocol detection (ATSP0)
+   * 2. If auto-detection fails, tries each protocol in priority order
+   * 3. Verifies protocol viability with standard test commands
+   *
+   * The method handles all protocol negotiation details including:
+   * - Protocol-specific timing requirements
+   * - Verification of communication stability
+   * - Recovery from protocol errors
+   *
    * Based on ElmProtocolHelper.tryAllProtocols and related methods.
+   *
+   * @returns Promise resolving to the detected protocol information, or null if detection failed
+   * @example
+   * ```typescript
+   * // Detect and set the appropriate protocol
+   * const protocolInfo = await protocolManager.detectAndSetProtocol();
+   *
+   * if (protocolInfo) {
+   *   console.log(`Detected protocol: ${protocolInfo.name} (${protocolInfo.protocol})`);
+   *
+   *   // Configure protocol-specific settings
+   *   await protocolManager.configureProtocolSettings(protocolInfo.protocol);
+   *
+   *   // Continue with ECU communication
+   * } else {
+   *   console.error("Failed to detect compatible protocol");
+   * }
+   * ```
    */
   async detectAndSetProtocol(): Promise<{
     protocol: PROTOCOL;
@@ -273,9 +353,40 @@ export class ProtocolManager {
   }
 
   /**
-   * Applies basic configuration settings after a protocol is established.
+   * Configures adapter with protocol-specific settings
+   *
+   * This method applies optimal settings for the detected protocol to ensure
+   * reliable communication with the vehicle. It configures:
+   *
+   * 1. Adaptive timing settings (ATAT)
+   *    - Uses more aggressive timing (ATAT2) for KWP protocols
+   *    - Uses standard timing (ATAT1) for other protocols
+   *
+   * 2. Header settings (ATH)
+   *    - Enables headers for CAN protocols (ATH1)
+   *    - Disables headers for non-CAN protocols (ATH0)
+   *
+   * 3. CAN protocol specific settings
+   *    - Automatic formatting (ATCAF1/0)
+   *    - Flow control configuration for multi-frame messages
+   *
+   * Note: This method assumes basic initialization (ATE0, ATL0, ATS0)
+   * has already been performed.
+   *
    * Based on ElmProtocol.initializeDevice and configureForProtocol logic.
-   * Assumes basic init (ATE0, ATL0, ATS0) was done earlier.
+   *
+   * @param protocol - The detected protocol number from PROTOCOL enum
+   * @example
+   * ```typescript
+   * // After successful protocol detection
+   * if (protocolInfo) {
+   *   // Apply protocol-specific settings
+   *   await protocolManager.configureProtocolSettings(protocolInfo.protocol);
+   *
+   *   // Now ready for vehicle communication
+   *   const vinResponse = await sendCommand("0902", 5000);
+   * }
+   * ```
    */
   async configureProtocolSettings(protocol: PROTOCOL | null): Promise<void> {
     if (protocol === null) {

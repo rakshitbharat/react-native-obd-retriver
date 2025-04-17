@@ -9,16 +9,82 @@ import {
 
 import type { SendCommandFunction } from '../utils/types';
 
+/**
+ * Raw DTC response structure containing both parsed and unparsed data
+ *
+ * This interface encapsulates all DTC response data from the vehicle,
+ * providing both raw response data and processed information.
+ *
+ * @example
+ * ```typescript
+ * // Example of RawDTCResponse for a vehicle with two DTCs
+ * const dtcResponse: RawDTCResponse = {
+ *   rawString: "7E8 43 02 01 43 00 00 00 00\r7E9 43 00 00 00 00 00 00 00",
+ *   rawResponse: [55, 69, 56, 32, 52, 51, 32, ...], // ASCII values
+ *   response: [
+ *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
+ *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
+ *   ],
+ *   rawBytesResponseFromSendCommand: [
+ *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
+ *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
+ *   ],
+ *   isCan: true,
+ *   protocolNumber: 6, // ISO 15765-4 CAN (11-bit, 500kbps)
+ *   ecuAddress: "7E8" // Primary ECU address
+ * };
+ * ```
+ */
 export interface RawDTCResponse {
+  /** Complete raw response string from the adapter */
   rawString: string | null;
+
+  /** Raw response as array of ASCII byte values */
   rawResponse: number[] | null;
+
+  /** Response parsed into frames and hex values */
   response: string[][] | null;
+
+  /** Duplicate of response field for backward compatibility */
   rawBytesResponseFromSendCommand: string[][];
+
+  /** Whether the current protocol is CAN-based */
   isCan: boolean;
+
+  /** Current protocol number (from PROTOCOL enum) */
   protocolNumber: number;
+
+  /** Primary ECU address that responded (e.g., "7E8") */
   ecuAddress: string | undefined;
 }
 
+/**
+ * Base class for all DTC (Diagnostic Trouble Code) retrievers
+ *
+ * This abstract base class implements common functionality for retrieving
+ * diagnostic trouble codes from vehicle ECUs. It handles:
+ *
+ * - Protocol detection and configuration
+ * - Header management
+ * - Error handling and recovery
+ * - Response parsing and interpretation
+ * - Multi-frame message handling
+ *
+ * Specific DTC retriever implementations extend this class for different
+ * service modes (Current DTCs, Pending DTCs, Permanent DTCs).
+ *
+ * @example
+ * ```typescript
+ * // Direct usage of a derived class:
+ * const retriever = new CurrentDTCRetriever(sendCommand);
+ * const dtcResponse = await retriever.retrieveRawDTCs();
+ *
+ * if (dtcResponse) {
+ *   console.log(`Found ${dtcResponse.troubleCodes.length} DTCs`);
+ *   dtcResponse.troubleCodes.forEach(dtc => console.log(dtc));
+ * }
+ * ```
+ */
 export class BaseDTCRetriever {
   // Protocol-related constants
   static PROTOCOL_TYPES = {
@@ -104,22 +170,45 @@ export class BaseDTCRetriever {
   protected spacesDisabled: boolean = false; // Assume spaces off (ATS0)
 
   /**
-   * Creates a new DTC Retriever
-   * @param sendCommand - Function to send commands to the adapter
-   * @param mode - OBD service mode ('03', '07', '0A')
+   * Creates a new DTC Retriever instance
+   *
+   * Initializes the retriever with the necessary command function and OBD service mode.
+   * It automatically calculates the expected response prefix based on the OBD protocol
+   * specification (service mode + 0x40).
+   *
+   * @param sendCommand - Function to send commands to the OBD adapter
+   * @param mode - OBD service mode ('03' for current DTCs, '07' for pending DTCs, '0A' for permanent DTCs)
+   *
+   * @example
+   * ```typescript
+   * // Create a retriever for current DTCs (Mode 03)
+   * const currentDtcRetriever = new CurrentDTCRetriever(sendCommand);
+   *
+   * // For more advanced usage with custom mode
+   * const customRetriever = new BaseDTCRetriever(sendCommand, '03');
+   * ```
    */
   constructor(sendCommand: SendCommandFunction, mode: string) {
     this.sendCommand = sendCommand;
     this.mode = mode;
 
     // Calculate response prefix (e.g., mode 03 -> response prefix 43)
+    // This follows the OBD protocol specification where response prefixes
+    // are service mode + 0x40
     this.responsePrefix = (parseInt(mode, 16) + 0x40)
       .toString(16)
       .toUpperCase();
   }
 
   /**
-   * Helper method to create a delay.
+   * Creates a delay for timing control between commands
+   *
+   * This helper method is used throughout the retrieval process to introduce
+   * controlled delays between commands, allowing the ECU and adapter enough
+   * time to process requests and prepare responses.
+   *
+   * @param ms - Delay duration in milliseconds
+   * @returns Promise that resolves after the specified delay
    */
   protected delay(ms: number): Promise<void> {
     return new Promise<void>(resolve => {
@@ -128,8 +217,23 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Configure adapter for optimal communication
-   * Implements settings initialization from original code (ElmProtocolInit.js, connectionService.ts)
+   * Configures the OBD adapter for optimal DTC retrieval
+   *
+   * This method prepares the adapter for reliable DTC communication by:
+   * 1. Resetting the adapter to ensure a clean state
+   * 2. Configuring communication parameters (echo, linefeeds, spaces)
+   * 3. Detecting the current protocol and its characteristics
+   * 4. Setting optimal protocol-specific settings
+   *
+   * The configuration process adapts to the specific protocol detected
+   * (CAN, KWP, ISO9141, J1850) and applies the appropriate settings for
+   * each protocol type.
+   *
+   * Note: This method is automatically called by retrieveDTCs() and similar
+   * methods before attempting to communicate with the vehicle.
+   *
+   * @throws May throw an error if critical configuration steps fail
+   * @returns Promise that resolves when configuration is complete
    */
   protected async configureAdapter(): Promise<void> {
     await log.info(
@@ -365,8 +469,35 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Main method to retrieve raw DTCs for the configured mode.
-   * Handles adapter configuration, command sending, retries, and basic response processing.
+   * Retrieves raw Diagnostic Trouble Codes from the vehicle
+   *
+   * This is the main entry point for DTC retrieval and handles the complete process:
+   * 1. Configures the adapter with appropriate settings
+   * 2. Sends the DTC retrieval command for the configured mode
+   * 3. Processes and parses the response data
+   * 4. Handles automatic retries on communication errors
+   * 5. Provides protocol-specific optimizations
+   *
+   * The method returns structured raw DTC data that can be further processed
+   * by derived classes to extract the actual trouble codes.
+   *
+   * @returns Promise resolving to a RawDTCResponse object containing the parsed data,
+   *          or null if retrieval failed after all retry attempts
+   *
+   * @example
+   * ```typescript
+   * // Using a derived class for current DTCs
+   * const retriever = new CurrentDTCRetriever(sendCommand);
+   * const rawResponse = await retriever.retrieveRawDTCs();
+   *
+   * if (rawResponse) {
+   *   console.log("Raw data retrieved successfully");
+   *   console.log(`Response from ECU: ${rawResponse.ecuAddress}`);
+   *
+   *   // The raw response can then be parsed into actual DTCs
+   *   const dtcs = retriever.parseDTCs(rawResponse);
+   * }
+   * ```
    */
   async retrieveRawDTCs(): Promise<RawDTCResponse | null> {
     const maxRetries = 3;
@@ -554,8 +685,30 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Parses raw response string into structured byte arrays (string[][]).
-   * Determines parsing strategy based on the detected protocol.
+   * Parses raw OBD responses into structured data based on protocol type
+   *
+   * This method acts as a protocol-aware parser that transforms unformatted
+   * adapter responses into structured data that can be analyzed. It handles:
+   *
+   * - CAN protocols: Uses specialized multi-frame handling for ISO-TP messages
+   * - KWP protocols: Processes responses with KWP-specific header formats
+   * - ISO9141/J1850: Handles the simpler response formats of these protocols
+   *
+   * The output format is a two-dimensional array where:
+   * - The outer array contains individual message frames
+   * - Each inner array contains the hex byte values within that frame
+   *
+   * This structured format allows higher-level methods to extract DTC values,
+   * regardless of which protocol was used to retrieve them.
+   *
+   * @param response - The raw string response from the adapter
+   * @returns Promise resolving to a two-dimensional array of hex byte values
+   *
+   * @example
+   * // Example return value for a CAN response with two DTCs:
+   * // [["43", "02", "01", "43", "00", "00", "00", "00"]]
+   * // This represents Mode 43 (response to Mode 03), 2 DTCs,
+   * // with DTC values 0143 (P0143) and 0000 (no second DTC)
    */
   protected async processRawResponse(response: string): Promise<string[][]> {
     if (!response) return [];
@@ -577,8 +730,32 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Extract hex byte pairs from a single frame or line of response data.
-   * Removes known prefixes (response code, headers if enabled) before extracting bytes.
+   * Extracts meaningful data bytes from a raw OBD response frame
+   *
+   * This method performs the critical task of cleaning and parsing raw OBD
+   * response data to extract only the relevant diagnostic bytes. It handles:
+   *
+   * 1. Removing ELM frame numbering prefixes (e.g., "0:", "1:")
+   * 2. Stripping the service mode response prefix (e.g., "43" for Mode 03)
+   * 3. Removing protocol-specific headers based on protocol type
+   * 4. Cleaning non-hex characters and formatting the data
+   *
+   * The method is protocol-aware and handles different header formats:
+   * - CAN 11-bit headers (e.g., "7E8")
+   * - CAN 29-bit headers (e.g., "18DAF1")
+   * - KWP headers (format/target/source bytes)
+   * - ISO9141 headers (3-byte format)
+   * - J1850 headers (various formats)
+   *
+   * @param line - A single line/frame from the adapter response
+   * @returns Array of hex byte strings (e.g., ["43", "01", "33", "00"])
+   *
+   * @example
+   * // For input: "7E8 43 01 33 00 00 00 00"
+   * // Returns: ["43", "01", "33", "00", "00", "00", "00"]
+   *
+   * // For input with headers disabled: "43 01 33 00 00 00 00"
+   * // Returns: ["01", "33", "00", "00", "00", "00"]
    */
   protected extractBytesFromSingleFrame(line: string): string[] {
     if (!line) return [];
@@ -653,8 +830,28 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Specifically handles CAN multi-frame messages (ISO-TP).
-   * Reassembles segmented messages based on frame indicators (10, 21, 22...).
+   * Reassembles ISO-TP segmented CAN messages for complete data retrieval
+   *
+   * CAN networks have a limited frame size (8 bytes), but diagnostic data
+   * often exceeds this limit. The ISO-TP protocol (ISO 15765-2) allows
+   * transmission of larger messages by segmenting them into multiple frames:
+   *
+   * - First Frame (FF): Contains first segment and total message length
+   * - Consecutive Frames (CF): Contains subsequent data segments
+   * - Flow Control (FC): Manages transmission flow
+   *
+   * This method handles the complex task of:
+   * 1. Organizing frames by source ECU address
+   * 2. Identifying frame types (SF, FF, CF, FC)
+   * 3. Detecting and handling sequence errors
+   * 4. Reassembling complete messages from segments
+   * 5. Verifying message integrity
+   *
+   * Without this reassembly, DTC data from modern vehicles would be incomplete
+   * or completely unreadable, as most vehicles use multi-frame responses.
+   *
+   * @param lines - Array of raw response lines from the adapter
+   * @returns Promise resolving to an array of reassembled message frames
    */
   protected async handleCANMultiFrame(lines: string[]): Promise<string[][]> {
     await log.debug(
@@ -1136,8 +1333,22 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Determine the active protocol by querying the adapter (ATDPN).
-   * Updates internal state variables (isCan, protocolNumber, protocolType, headerFormat).
+   * Detects the active communication protocol by querying the adapter
+   *
+   * This method determines which OBD protocol the adapter is currently using
+   * by sending the ATDPN command (Describe Protocol by Number). Based on the
+   * response, it updates internal state variables to optimize communication:
+   *
+   * - isCan: Whether the protocol is CAN-based
+   * - protocolNumber: The numeric ID of the protocol (from ELM327 specifications)
+   * - protocolType: The protocol family (CAN, KWP, ISO9141, J1850)
+   * - headerFormat: The specific header format used by the protocol
+   *
+   * Different protocols require different handling of headers, timing, and
+   * multi-frame messages. This method ensures subsequent operations use
+   * the correct approach for the active protocol.
+   *
+   * @returns Promise resolving to true if a valid protocol was detected, false otherwise
    */
   protected async detectProtocol(): Promise<boolean> {
     await log.debug(`[${this.constructor.name}] Detecting protocol (ATDPN)...`);
@@ -1188,8 +1399,34 @@ export class BaseDTCRetriever {
   }
 
   /**
-   * Updates internal protocol state based on the ELM protocol number.
-   * Maps protocol number to type (CAN, KWP, etc.) and header format.
+   * Maps ELM protocol numbers to protocol types and characteristics
+   *
+   * This method translates the numeric protocol ID (from ATDPN command)
+   * into the corresponding protocol type, header format, and other
+   * protocol-specific characteristics. It handles:
+   *
+   * - CAN protocols (6-20): Sets proper 11-bit or 29-bit header format
+   * - ISO 9141-2 (3): Non-CAN protocol with specific timing requirements
+   * - ISO 14230-4 KWP (4-5): Non-CAN protocol with header format needs
+   * - SAE J1850 PWM/VPW (1-2): Older non-CAN protocol variants
+   *
+   * This mapping ensures the retriever can properly format commands
+   * and parse responses according to the protocol's requirements.
+   *
+   * Protocol documentation reference:
+   * - 0: Auto (protocol detection by adapter)
+   * - 1: SAE J1850 PWM (41.6 kbaud, standard Ford)
+   * - 2: SAE J1850 VPW (10.4 kbaud, standard GM)
+   * - 3: ISO 9141-2 (5 baud init, 10.4 kbaud)
+   * - 4: ISO 14230-4 KWP (5 baud init, 10.4 kbaud)
+   * - 5: ISO 14230-4 KWP (fast init, 10.4 kbaud)
+   * - 6: ISO 15765-4 CAN (11-bit ID, 500 kbaud)
+   * - 7: ISO 15765-4 CAN (29-bit ID, 500 kbaud)
+   * - 8: ISO 15765-4 CAN (11-bit ID, 250 kbaud)
+   * - 9: ISO 15765-4 CAN (29-bit ID, 250 kbaud)
+   * - 10+: Additional CAN variants
+   *
+   * @param protocolNum - The protocol number from the adapter's ATDPN response
    */
   protected updateProtocolInfo(protocolNum: number): void {
     this.protocolNumber = protocolNum; // Store the raw number
