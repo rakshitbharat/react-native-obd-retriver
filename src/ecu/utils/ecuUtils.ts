@@ -1,10 +1,18 @@
-import { TextDecoder, TextEncoder } from 'text-encoding'; // Polyfill might be needed
+import { TextDecoder, TextEncoder } from 'text-encoding';
 
-import { log } from '../../utils/logger'; // Use project logger
+import { log } from '../../utils/logger';
 
 /**
  * Convert hex string to byte array (Uint8Array).
- * Based on hexToBytes from docs/ecu-utils.js
+ *
+ * @param hex - Hex string to convert (can include spaces, non-hex chars filtered)
+ * @returns Uint8Array containing decoded bytes
+ * @example
+ * ```typescript
+ * // Convert hex string to bytes
+ * const bytes = hexToBytes('48 65 6C 6C 6F');
+ * console.log(bytes); // Uint8Array [72, 101, 108, 108, 111]
+ * ```
  */
 export const hexToBytes = (hex: string): Uint8Array => {
   const cleanedHex = hex.replace(/[^0-9a-fA-F]/g, ''); // Remove non-hex chars and spaces
@@ -39,8 +47,17 @@ export const hexToBytes = (hex: string): Uint8Array => {
 };
 
 /**
- * Convert byte array (Uint8Array or number[]) to hex string.
- * Based on bytesToHex from docs/ecu-utils.js
+ * Convert byte array to hex string.
+ * Always returns uppercase hex with padding.
+ *
+ * @param bytes - Array of byte values to convert
+ * @returns Uppercase hex string
+ * @example
+ * ```typescript
+ * // Convert bytes to hex string
+ * const hex = bytesToHex([72, 101, 108, 108, 111]);
+ * console.log(hex); // "48656C6C6F"
+ * ```
  */
 export const bytesToHex = (bytes: Uint8Array | number[]): string => {
   // Handle null/undefined input gracefully
@@ -71,10 +88,18 @@ export const bytesToHex = (bytes: Uint8Array | number[]): string => {
 };
 
 /**
- * Convert byte array (Uint8Array or number[]) to string using UTF-8 or ISO-8859-1.
+ * Convert byte array to string using UTF-8 or ISO-8859-1.
  * Handles potential errors during decoding.
- * Tries UTF-8 first, falls back to ISO-8859-1 (Latin1) which covers more byte values than ASCII.
- * Based on decodeValue and byteArrayToString from docs/ecu-utils.js / OBDUtils.js
+ * Tries UTF-8 first, falls back to ISO-8859-1 which covers more byte values.
+ *
+ * @param bytes - Array of byte values to convert to string
+ * @returns Decoded string, empty string on error
+ * @example
+ * ```typescript
+ * // Convert bytes to string
+ * const text = bytesToString(new Uint8Array([72, 101, 108, 108, 111]));
+ * console.log(text); // "Hello"
+ * ```
  */
 export const bytesToString = (
   bytes: Uint8Array | number[] | null | undefined,
@@ -142,8 +167,17 @@ export const bytesToString = (
 };
 
 /**
- * Convert string to byte array (Uint8Array) using UTF-8.
- * Based on stringToBytes from docs/common/BleEmitterUtils.js
+ * Convert string to byte array using UTF-8.
+ * Includes fallback to basic ASCII if UTF-8 encoding fails.
+ *
+ * @param str - String to convert to bytes
+ * @returns Uint8Array containing encoded bytes
+ * @example
+ * ```typescript
+ * // Convert string to bytes
+ * const bytes = stringToBytes("Hello");
+ * console.log(bytes); // Uint8Array [72, 101, 108, 108, 111]
+ * ```
  */
 export const stringToBytes = (str: string | null | undefined): Uint8Array => {
   if (!str) {
@@ -182,7 +216,16 @@ export const stringToBytes = (str: string | null | undefined): Uint8Array => {
 
 /**
  * Format number as hex string with padding.
- * Based on toHexString from docs/ecu-utils.js
+ *
+ * @param num - Number to convert to hex
+ * @param width - Minimum width for padding with zeros
+ * @returns Uppercase hex string padded to specified width
+ * @example
+ * ```typescript
+ * // Convert number to padded hex
+ * const hex = toHexString(26, 4);
+ * console.log(hex); // "001A"
+ * ```
  */
 export const toHexString = (
   num: number | null | undefined,
