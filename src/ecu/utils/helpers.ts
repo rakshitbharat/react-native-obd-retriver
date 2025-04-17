@@ -598,6 +598,39 @@ export const parseVinFromResponse = (
 
 /** Parses DTC codes from assembled OBD response data */
 // (Unchanged from connectionService - keep as is, added logging)
+/**
+ * Transforms raw OBD response data into standardized Diagnostic Trouble Codes
+ * 
+ * This function parses the raw hexadecimal data returned from the vehicle's
+ * diagnostic system and converts it into standard DTC format codes (e.g., "P0123").
+ * It handles various OBD response formats including:
+ * 
+ * - Responses with or without headers
+ * - Single and multi-ECU responses
+ * - Different service modes (03, 07, 0A for current/pending/permanent DTCs)
+ * - Zero-DTC cases
+ * - Various byte order conventions
+ * 
+ * DTC Format Translation:
+ * - First character: P (Powertrain), C (Chassis), B (Body), U (Network)
+ * - Second character: 0 (standard), 1-3 (manufacturer-specific)
+ * - Last three characters: Specific fault code number
+ * 
+ * @param responseData - Raw response string from OBD adapter
+ * @param modePrefix - Expected response prefix for the mode (e.g., "43" for mode 03)
+ * @returns Array of standardized DTC strings, empty array if no DTCs, or null if parsing failed
+ * 
+ * @example
+ * ```typescript
+ * // For Mode 03 (current DTCs) with raw response "43 02 01 43 80 13"
+ * const dtcs = parseDtcsFromResponse(rawResponse, "43");
+ * // Returns: ["P0143", "B0013"]
+ * 
+ * // For response with no DTCs: "43 00"
+ * const emptyDtcs = parseDtcsFromResponse("43 00", "43");
+ * // Returns: [] (empty array)
+ * ```
+ */
 export const parseDtcsFromResponse = (
   responseData: string | null | undefined,
   modePrefix: string, // e.g., "43", "47", "4A"

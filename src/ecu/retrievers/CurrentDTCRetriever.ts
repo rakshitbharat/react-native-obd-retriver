@@ -5,6 +5,43 @@ import { BaseDTCRetriever, type RawDTCResponse } from './BaseDTCRetriever';
 import type { ServiceMode } from './types';
 import type { SendCommandFunction } from '../utils/types';
 
+/**
+ * Specializes in retrieving current (active) Diagnostic Trouble Codes
+ * 
+ * The CurrentDTCRetriever class uses OBD Service Mode 03 to retrieve currently
+ * active DTCs from the vehicle's diagnostic system. These are the codes that
+ * typically trigger the Malfunction Indicator Light (MIL, or "Check Engine Light").
+ * 
+ * Key features:
+ * - Retrieves currently active fault codes
+ * - Uses OBD service mode 03 (0x03)
+ * - Works across all OBD-II compliant vehicles
+ * - Handles multi-ECU responses
+ * - Processes manufacturer-specific codes
+ * 
+ * @example
+ * ```typescript
+ * // Create a retriever instance
+ * const dtcRetriever = new CurrentDTCRetriever(sendCommand);
+ * 
+ * // Retrieve and parse DTCs
+ * const dtcResponse = await dtcRetriever.retrieveDTCs();
+ * 
+ * if (dtcResponse) {
+ *   // Check if any DTCs were found
+ *   if (dtcResponse.length === 0) {
+ *     console.log("No active DTCs found. No check engine light issues.");
+ *   } else {
+ *     console.log(`Found ${dtcResponse.length} active DTCs:`);
+ *     dtcResponse.forEach(dtc => {
+ *       console.log(`- ${dtc}`); // e.g., "P0300", "P0171"
+ *     });
+ *   }
+ * } else {
+ *   console.error("Failed to retrieve DTCs");
+ * }
+ * ```
+ */
 export class CurrentDTCRetriever extends BaseDTCRetriever {
   // Add detailed service mode constant to match JavaScript implementation
   static SERVICE_MODE: ServiceMode = {
@@ -20,9 +57,36 @@ export class CurrentDTCRetriever extends BaseDTCRetriever {
   }
 
   /**
-   * Overrides retrieveRawDTCs to use the base class logic directly.
-   * The base class now handles configuration, command sending, retries,
-   * and response processing including NO DATA checks.
+   * Retrieves current (active) DTCs from the vehicle in raw format
+   * 
+   * This method sends the OBD Mode 03 request to retrieve currently active DTCs
+   * that have triggered the Malfunction Indicator Light (MIL). It:
+   * 
+   * 1. Configures the adapter appropriately for DTC retrieval
+   * 2. Sends the Mode 03 command to request current DTCs
+   * 3. Processes and validates the raw response data
+   * 4. Handles protocol-specific message formatting
+   * 5. Implements error handling and automatic retries
+   * 
+   * Note: This method overrides the base class implementation to add
+   * specific logging relevant to current DTCs, but relies on the base
+   * class for the core retrieval logic.
+   * 
+   * @returns Promise resolving to a RawDTCResponse object containing the 
+   *          structured raw data, or null if retrieval failed
+   * 
+   * @example
+   * ```typescript
+   * // Get raw DTC response data
+   * const rawResponse = await dtcRetriever.retrieveRawDTCs();
+   * 
+   * if (rawResponse) {
+   *   console.log(`Response received from ECU: ${rawResponse.ecuAddress}`);
+   *   console.log(`Using protocol: ${rawResponse.protocolNumber}`);
+   *   
+   *   // Raw response can be parsed into DTCs using parseDTCs method
+   * }
+   * ```
    */
   public override async retrieveRawDTCs(): Promise<RawDTCResponse | null> {
     await log.debug(

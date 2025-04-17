@@ -23,21 +23,78 @@ import {
 import type { SendCommandFunction, RawDTCResponse } from '../utils/types';
 
 /**
- * Result type for connection attempt
+ * Result type for ECU connection attempt
+ * 
+ * This represents the result of a connection attempt to the vehicle's ECU,
+ * including protocol information, vehicle voltage, and detected ECU addresses.
+ * 
+ * @example
+ * ```typescript
+ * // Example of a successful connection result
+ * const successResult: ConnectionResult = {
+ *   success: true,
+ *   protocol: PROTOCOL.ISO_15765_4_CAN_11BIT_500K,
+ *   protocolName: "ISO 15765-4 CAN (11 bit ID, 500 kbaud)",
+ *   voltage: "12.6V",
+ *   detectedEcus: ["7E8", "7E9"]
+ * };
+ * 
+ * // Example of a failed connection result
+ * const failedResult: ConnectionResult = {
+ *   success: false,
+ *   error: "No response from ECU after protocol initialization"
+ * };
+ * ```
  */
 type ConnectionResult = {
+  /** Whether the connection was successful */
   success: boolean;
-  protocol?: PROTOCOL | null; // Use PROTOCOL enum
-  protocolName?: string | null; // Added protocolName
+  
+  /** 
+   * Detected protocol identifier from the PROTOCOL enum
+   * Only present on successful connection
+   */
+  protocol?: PROTOCOL | null;
+  
+  /**
+   * Human-readable protocol name
+   * Only present on successful connection
+   */
+  protocolName?: string | null;
+  
+  /**
+   * Current vehicle voltage with unit (e.g., "12.6V")
+   * May be present on successful connection
+   */
   voltage?: string | null;
+  
+  /**
+   * Error message describing why connection failed
+   * Only present on failed connection
+   */
   error?: string;
-  detectedEcus?: string[]; // Store detected ECU addresses
+  
+  /**
+   * Array of detected ECU addresses (e.g., ["7E8", "7E9"])
+   * Only present on successful connection
+   */
+  detectedEcus?: string[];
 };
 
 /**
- * Result type for basic adapter info
+ * Information about the OBD adapter
+ * 
+ * Contains basic information retrieved from the OBD adapter,
+ * such as battery voltage and identification.
+ * 
+ * @example
+ * ```typescript
+ * const info = await getAdapterInfo();
+ * console.log(`Adapter voltage: ${info.voltage || "Unknown"}`);
+ * ```
  */
 type AdapterInfo = {
+  /** Current adapter/vehicle voltage with unit (e.g., "12.6V") */
   voltage: string | null;
   // Add other adapter info if needed in the future
 };
@@ -51,12 +108,35 @@ const delay = (ms: number): Promise<void> =>
   });
 
 /**
- * Initializes the ELM327 adapter with standard settings.
- * Sends ATZ, ATE0, ATL0, ATS0. Checks voltage as final step.
- * Note: Headers are typically set *after* protocol detection.
+ * Initializes the ELM327 adapter with standard settings
+ * 
+ * This function performs the initial setup sequence for the OBD adapter:
+ * 1. Resets the adapter to default settings with ATZ
+ * 2. Disables echo with ATE0 (prevents commands from being echoed back)
+ * 3. Disables linefeeds with ATL0 (cleaner responses)
+ * 4. Disables spaces with ATS0 (more compact output)
+ * 5. Verifies adapter responsiveness
+ * 
+ * Note: Protocol-specific settings like headers are typically configured
+ * *after* successful protocol detection.
+ * 
  * Based on logic in ElmProtocolInit.initializeProtocol and initializeDevice.
- * @param sendCommand Function to send commands to the adapter.
- * @returns True if initialization seems successful, false otherwise.
+ * 
+ * @example
+ * ```typescript
+ * // Initialize adapter before attempting protocol detection
+ * const initialized = await initializeAdapter(sendCommand);
+ * if (initialized) {
+ *   console.log("Adapter initialized successfully");
+ *   // Proceed with protocol detection
+ *   const protocolResult = await detectProtocol(sendCommand);
+ * } else {
+ *   console.error("Failed to initialize adapter");
+ * }
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the adapter
+ * @returns Promise resolving to true if initialization was successful, false otherwise
  */
 export const initializeAdapter = async (
   sendCommand: SendCommandFunction,
@@ -169,11 +249,41 @@ export const initializeAdapter = async (
 };
 
 /**
- * Attempts to connect to the ECU: Initializes adapter, detects protocol, gets basic info.
- * Uses ProtocolManager for detection and configuration.
+ * Connects to the vehicle's ECU with automatic protocol detection
+ * 
+ * This function performs the complete connection sequence:
+ * 1. Initializes the OBD adapter with standard settings
+ * 2. Detects the appropriate protocol for the vehicle
+ * 3. Configures protocol-specific settings 
+ * 4. Retrieves adapter information (voltage)
+ * 5. Identifies available ECU addresses
+ * 
+ * This is the main entry point for establishing communication with a vehicle
+ * and should be used before attempting to retrieve any vehicle data.
+ * 
  * Based on ECUConnector.connectToECU and ProtocolServiceBased.connectToECU flow.
- * @param sendCommand Function to send commands to the adapter.
- * @returns ConnectionResult object indicating success/failure and connection details.
+ * 
+ * @example
+ * ```typescript
+ * // Connect to the vehicle's ECU
+ * const result = await connectToECU(sendCommand);
+ * 
+ * if (result.success) {
+ *   console.log("Successfully connected to vehicle:");
+ *   console.log(`Protocol: ${result.protocolName} (${result.protocol})`);
+ *   console.log(`ECUs detected: ${result.detectedEcus?.join(', ')}`);
+ *   console.log(`Vehicle voltage: ${result.voltage}`);
+ *   
+ *   // Continue with vehicle diagnostics, data retrieval, etc.
+ * } else {
+ *   console.error(`Connection failed: ${result.error}`);
+ *   
+ *   // Handle connection failure (e.g., retry, user notification)
+ * }
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the OBD adapter
+ * @returns Promise resolving to a ConnectionResult object with connection details
  */
 export const connectToECU = async (
   sendCommand: SendCommandFunction,
@@ -313,9 +423,32 @@ export const getAdapterInfo = async (
 };
 
 /**
- * Disconnects from the ECU by sending the Protocol Close command (ATPC).
+ * Disconnects from the ECU by closing the active protocol session
+ * 
+ * This function sends the Protocol Close (ATPC) command to the adapter,
+ * which terminates the current communication session with the vehicle's ECU.
+ * This is important for proper cleanup before:
+ * - Disconnecting from the adapter
+ * - Switching to a different protocol
+ * - Ending a diagnostic session
+ * 
+ * The function handles errors gracefully and won't throw exceptions,
+ * making it safe to call during application cleanup.
+ * 
  * Based on logic in ECUConnector.resetDevice (partial).
- * @param sendCommand Function to send commands to the adapter.
+ * 
+ * @example
+ * ```typescript
+ * // After completing diagnostics, disconnect from the ECU
+ * await disconnectFromECU(sendCommand);
+ * console.log("ECU session closed");
+ * 
+ * // Now safe to disconnect Bluetooth if needed
+ * await bluetoothManager.disconnect();
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the adapter
+ * @returns Promise that resolves when disconnection is complete
  */
 export const disconnectFromECU = async (
   sendCommand: SendCommandFunction,
@@ -350,10 +483,47 @@ export const disconnectFromECU = async (
 // ==========================================================================
 
 /**
- * Retrieves the Vehicle Identification Number (VIN) using VINRetriever.
- * This function now delegates the command sending, flow control, retries,
- * and parsing logic to the VINRetriever class.
- * (Function implementation changed - marked as Non-ECU for context hook)
+ * Retrieves the Vehicle Identification Number (VIN) 
+ * 
+ * The VIN is a unique 17-character identifier assigned to every vehicle and
+ * contains encoded information about the vehicle's manufacturer, features,
+ * and specifications.
+ * 
+ * This function uses the VINRetriever to handle:
+ * - Sending the Mode 09 PID 02 request to the vehicle
+ * - Managing flow control for multi-frame responses
+ * - Retrying if needed for reliable retrieval
+ * - Parsing and validating the VIN format
+ * 
+ * Note: The ECU connection must be established before calling this function.
+ * 
+ * @example
+ * ```typescript
+ * // First establish connection
+ * const connectionResult = await connectToECU(sendCommand);
+ * 
+ * if (connectionResult.success) {
+ *   // Retrieve the VIN
+ *   const vin = await getVehicleVIN(sendCommand);
+ *   
+ *   if (vin) {
+ *     console.log(`Vehicle VIN: ${vin}`);
+ *     // Example: "1G1JC5444R7252367"
+ *     
+ *     // First character (1) = Country of manufacture (USA)
+ *     // Second character (G) = Manufacturer (General Motors)
+ *     // Positions 4-8 = Vehicle attributes
+ *     // Position 10 = Model year
+ *     // Position 11 = Assembly plant
+ *     // Last 6 digits = Sequential production number
+ *   } else {
+ *     console.error("Failed to retrieve VIN");
+ *   }
+ * }
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the OBD adapter
+ * @returns Promise resolving to the VIN string or null if it could not be retrieved
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
@@ -387,8 +557,42 @@ export const getVehicleVIN = async (
 };
 
 /**
- * Retrieves Diagnostic Trouble Codes (DTCs).
- * (Function remains unchanged internally - marked as Non-ECU)
+ * Retrieves Diagnostic Trouble Codes (DTCs) from the vehicle
+ * 
+ * DTCs are standardized codes used by vehicle ECUs to indicate various 
+ * malfunctions and system issues. This function can retrieve three types of DTCs:
+ * 
+ * - Current/Active DTCs (Mode 03): Currently active fault conditions
+ * - Pending DTCs (Mode 07): Detected issues that haven't triggered the MIL yet
+ * - Permanent DTCs (Mode 0A): Severe issues that cannot be cleared with basic tools
+ * 
+ * The function handles multi-frame responses and proper DTC formatting.
+ * 
+ * Note: ECU connection must be established before calling this function.
+ * 
+ * @example
+ * ```typescript
+ * // Retrieve current DTCs (check engine light codes)
+ * const currentDTCs = await getVehicleDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
+ * 
+ * if (currentDTCs === null) {
+ *   console.error("Failed to retrieve DTCs");
+ * } else if (currentDTCs.length === 0) {
+ *   console.log("No DTCs present (vehicle reports no issues)");
+ * } else {
+ *   console.log(`Found ${currentDTCs.length} trouble codes:`);
+ *   currentDTCs.forEach(dtc => {
+ *     console.log(`- ${dtc}`); // Example: "P0300" (Random/Multiple Misfire)
+ *   });
+ * }
+ * 
+ * // You can also retrieve pending DTCs
+ * const pendingDTCs = await getVehicleDTCs(sendCommand, OBD_MODE.PENDING_DTC);
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the OBD adapter
+ * @param mode - The DTC mode to use (CURRENT_DTC, PENDING_DTC, or PERMANENT_DTC)
+ * @returns Promise resolving to an array of DTC strings, empty array if none, or null if retrieval failed
  */
 export const getVehicleDTCs = async (
   sendCommand: SendCommandFunction,
@@ -441,8 +645,39 @@ export const getVehicleDTCs = async (
 };
 
 /**
- * Clears Diagnostic Trouble Codes (DTCs) with verification.
- * (Function remains unchanged internally - marked as Non-ECU)
+ * Clears Diagnostic Trouble Codes (DTCs) from the vehicle's memory
+ * 
+ * This function sends the Mode 04 command to clear DTCs and reset the 
+ * Malfunction Indicator Light (MIL, commonly known as the Check Engine Light).
+ * It also performs verification to confirm the DTCs were actually cleared.
+ * 
+ * Important notes about DTC clearing:
+ * - Requires the vehicle's ignition to be on (but engine not necessarily running)
+ * - Some vehicles require specific security access before clearing DTCs
+ * - Permanent DTCs (Mode 0A) typically cannot be cleared with this method
+ * - Verification ensures the vehicle actually cleared the codes (not just the adapter)
+ * 
+ * @example
+ * ```typescript
+ * // Clear DTCs with verification
+ * const clearSuccess = await clearVehicleDTCs(sendCommand);
+ * 
+ * if (clearSuccess) {
+ *   console.log("DTCs successfully cleared and verified");
+ *   // MIL (check engine light) should turn off if previously lit
+ * } else {
+ *   console.error("Failed to clear DTCs or verification failed");
+ *   // Vehicle might require specific conditions or access rights
+ * }
+ * 
+ * // For faster clearing without verification:
+ * const quickClear = await clearVehicleDTCs(sendCommand, true);
+ * // Note: This is less reliable but faster
+ * ```
+ * 
+ * @param sendCommand - Function to send commands to the OBD adapter
+ * @param skipVerification - Optional flag to skip verification step (defaults to false)
+ * @returns Promise resolving to true if DTCs were successfully cleared (and verified if required)
  */
 export const clearVehicleDTCs = async (
   sendCommand: SendCommandFunction,

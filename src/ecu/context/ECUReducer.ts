@@ -4,7 +4,38 @@ import { ECUActionType } from '../utils/types';
 
 import type { ECUAction, ECUState } from '../utils/types';
 
-// Initial state reflects the properties defined in ECUState
+/**
+ * Initial state for the ECU context reducer
+ * 
+ * This state object represents the complete state of the ECU communication system,
+ * including connection status, protocol information, and diagnostic data.
+ * 
+ * The state is organized into several logical groups:
+ * 
+ * 1. Connection state:
+ *    - status: Current connection status (DISCONNECTED, CONNECTING, etc.)
+ *    - lastError: Most recent error message, if any
+ * 
+ * 2. Protocol information:
+ *    - activeProtocol: Numeric protocol ID detected by the adapter
+ *    - protocolName: Human-readable name of the active protocol
+ * 
+ * 3. ECU information:
+ *    - deviceVoltage: Current voltage reported by the OBD adapter
+ *    - detectedEcuAddresses: Array of ECU addresses found on the vehicle's network
+ *    - selectedEcuAddress: Currently selected ECU for targeted commands
+ * 
+ * 4. Diagnostic Trouble Code (DTC) states:
+ *    - currentDTCs: Active DTCs that have triggered the Check Engine Light
+ *    - pendingDTCs: Developing/intermittent DTCs that haven't triggered the MIL
+ *    - permanentDTCs: Non-erasable DTCs for emissions compliance tracking
+ *    - rawDTC* variants: Raw response data for each DTC type
+ * 
+ * 5. Operation states:
+ *    - dtcLoading: Whether DTCs are currently being retrieved
+ *    - dtcClearing: Whether a DTC clear operation is in progress
+ *    - rawDTCLoading: Whether raw DTC data is being retrieved
+ */
 export const initialState: ECUState = {
   status: ECUConnectionStatus.DISCONNECTED,
   activeProtocol: null,
@@ -25,6 +56,41 @@ export const initialState: ECUState = {
   rawDTCLoading: false,
 };
 
+/**
+ * Reducer for ECU state management
+ * 
+ * This reducer handles all state transitions for the ECU communication system,
+ * processing various actions related to connection management, DTC operations,
+ * and vehicle information retrieval.
+ * 
+ * The reducer maintains immutability by creating new state objects for each action,
+ * and implements careful error handling to ensure the application remains in a 
+ * consistent state even when operations fail.
+ * 
+ * Action categories:
+ * 
+ * 1. Connection actions:
+ *    - CONNECT_START: Initiates ECU connection process
+ *    - CONNECT_SUCCESS: Updates state with protocol and ECU information
+ *    - CONNECT_FAILURE: Records connection errors
+ *    - DISCONNECT: Resets state after disconnection
+ * 
+ * 2. Information actions:
+ *    - SET_ECU_INFO: Updates ECU metadata (voltage, etc.)
+ *    - RESET: Performs complete state reset
+ * 
+ * 3. DTC operations:
+ *    - FETCH_DTCS_*: Manages parsed DTC retrieval state
+ *    - CLEAR_DTCS_*: Handles DTC clearing operations
+ *    - FETCH_RAW_DTCS_*: Manages raw DTC data retrieval
+ * 
+ * Each action typically includes appropriate payload data that's carefully
+ * extracted using nullish coalescing to ensure type safety and prevent runtime errors.
+ * 
+ * @param state - Current ECU state
+ * @param action - Action to process with optional payload
+ * @returns New ECU state
+ */
 export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
   // Use void operator to mark promise as intentionally not awaited
   void log.debug(`[ECUReducer] Action: ${action.type}`, {
