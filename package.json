@@ -1,6 +1,6 @@
 {
   "name": "react-native-obd-retriver",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A React Native library for raw OBD-II data communication via Bluetooth LE",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
