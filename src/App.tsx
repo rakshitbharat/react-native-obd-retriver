@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { BluetoothProvider } from 'react-native-bluetooth-obd-manager';
 
-import { ECUProvider } from './ecu';
+import { ECUProvider } from './ecu/context/ECUContext';
 import {
   ClearDTCExample,
   DTCManagerExample,
