@@ -17,12 +17,13 @@
   },
   "files": [
     "lib",
-    "src",
+    "!lib/**/*.map",
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
-    "!lib/**/*.map",
-    "!*.test.*"
+    "!**/*.test.*",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "bob build && tsc --build tsconfig.build.json",
