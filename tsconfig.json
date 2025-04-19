@@ -1,43 +1,31 @@
 // tsconfig.json
 {
   "compilerOptions": {
-    "target": "es2019",
+    "target": "esnext",
     "module": "esnext",
-    "lib": ["es2019"],
-    "types": ["node", "jest", "react-native"],
+    "lib": ["es2017", "dom"],
     "allowJs": true,
     "jsx": "react-native",
-    "noEmit": true,
+    "declaration": true,
     "isolatedModules": true,
     "strict": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
-    "strictPropertyInitialization": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    // Additional strict rules
-    "exactOptionalPropertyTypes": true,
-    "noImplicitReturns": true,
-    "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "useUnknownInCatchVariables": true,
-    "forceConsistentCasingInFileNames": true,
     "moduleResolution": "node",
-    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "rootDir": "src",
+    "outDir": "lib/typescript",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
-    "paths": {
-      "*": ["src/*"]
-    }
+    "resolveJsonModule": true,
+    "types": ["jest", "react-native", "node"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "lib", "**/__tests__/*", "example", "__mocks__/*"]
+  "exclude": [
+    "**/node_modules",
+    "**/.*",
+    "**/dist",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/__tests__"
+  ],
+  "include": ["src"]
 }

@@ -1,75 +1,90 @@
 // Define __DEV__ first
-import '@testing-library/jest-native/extend-expect';
-import { jest } from '@jest/globals';
-
 global.__DEV__ = true;
 
-// Mock react-native-permissions
-jest.mock('react-native-permissions', () => ({
-  check: jest.fn(() => Promise.resolve(true)),
-  request: jest.fn(() => Promise.resolve(true)),
-  PERMISSIONS: {
-    ANDROID: { BLUETOOTH: 'android.permission.BLUETOOTH' },
-    IOS: { BLUETOOTH_PERIPHERAL: 'ios.permission.BLUETOOTH_PERIPHERAL' },
-  },
-  RESULTS: {
-    GRANTED: 'granted',
-    DENIED: 'denied',
-  },
-}));
+import '@testing-library/jest-native';
+import '@testing-library/react-native';
 
-// Mock react-native-bluetooth-obd-manager
-jest.mock('react-native-bluetooth-obd-manager', () => ({
-  useBluetooth: () => ({
-    isBluetoothOn: true,
-    hasPermissions: true,
-    isInitializing: false,
-    isScanning: false,
-    discoveredDevices: [],
-    connectedDevice: null,
-    isConnecting: false,
-    isDisconnecting: false,
-    error: null,
-    isAwaitingResponse: false,
-    isStreaming: false,
-    lastSuccessfulCommandTimestamp: null,
-    checkPermissions: jest.fn(() => Promise.resolve(true)),
-    requestBluetoothPermissions: jest.fn(() => Promise.resolve(true)),
-    promptEnableBluetooth: jest.fn(() => Promise.resolve(true)),
-    scanDevices: jest.fn(() => Promise.resolve()),
-    connectToDevice: jest.fn(() => Promise.resolve()),
-    disconnect: jest.fn(() => Promise.resolve()),
-    sendCommand: jest.fn(() => Promise.resolve('')),
-    sendCommandRaw: jest.fn(() => Promise.resolve(new Uint8Array())),
-    sendCommandRawChunked: jest.fn(() => Promise.resolve(new Uint8Array())),
-    setStreaming: jest.fn(),
-  }),
-}));
-
-// Setup timing mocks
+// Enable fake timers for all tests
 jest.useFakeTimers();
-jest.spyOn(global, 'setTimeout');
-jest.spyOn(global, 'clearTimeout');
-jest.spyOn(global, 'setInterval');
-jest.spyOn(global, 'clearInterval');
 
-// Add custom matchers
-expect.extend({
-  toBeValidBleDevice(received) {
-    const pass =
-      received &&
-      typeof received.id === 'string' &&
-      typeof received.name === 'string';
+// Mock the NativeModules we need
+const mockBleManager = {
+  start: jest.fn(() => Promise.resolve()),
+  scan: jest.fn(() => Promise.resolve()),
+  stopScan: jest.fn(() => Promise.resolve()),
+  connect: jest.fn(() => Promise.resolve()),
+  disconnect: jest.fn(() => Promise.resolve()),
+  checkState: jest.fn(),
+  enableBluetooth: jest.fn(() => Promise.resolve()),
+  retrieveServices: jest.fn(() => Promise.resolve()),
+  startNotification: jest.fn(() => Promise.resolve()),
+  stopNotification: jest.fn(() => Promise.resolve()),
+  write: jest.fn(() => Promise.resolve()),
+  writeWithoutResponse: jest.fn(() => Promise.resolve()),
+};
 
-    return {
-      pass,
-      message: () => `expected ${received} to be a valid BLE device`,
-    };
-  },
+jest.mock('react-native', () => {
+  const RN = jest.requireActual('react-native');
+  RN.NativeEventEmitter = jest.fn(() => ({
+    addListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
+    removeAllListeners: jest.fn(),
+  }));
+  
+  return {
+    ...RN,
+    NativeModules: {
+      ...RN.NativeModules,
+      BleManager: mockBleManager,
+    },
+    Platform: {
+      ...RN.Platform,
+      select: jest.fn(obj => obj.android),
+      OS: 'android',
+      Version: 31,
+    },
+  };
 });
 
-// Cleanup after each test
-afterEach(() => {
-  jest.clearAllMocks();
-  jest.clearAllTimers();
+// Mock react-native-permissions with complete implementation
+jest.mock('react-native-permissions', () => {
+  const mockResults = {
+    UNAVAILABLE: 'unavailable',
+    DENIED: 'denied',
+    GRANTED: 'granted',
+    BLOCKED: 'blocked',
+  };
+
+  return {
+    PERMISSIONS: {
+      ANDROID: {
+        BLUETOOTH_SCAN: 'android.permission.BLUETOOTH_SCAN',
+        BLUETOOTH_CONNECT: 'android.permission.BLUETOOTH_CONNECT',
+        ACCESS_FINE_LOCATION: 'android.permission.ACCESS_FINE_LOCATION',
+      },
+      IOS: {
+        LOCATION_WHEN_IN_USE: 'ios.permission.LOCATION_WHEN_IN_USE',
+        BLUETOOTH_PERIPHERAL: 'ios.permission.BLUETOOTH_PERIPHERAL',
+      },
+    },
+    RESULTS: mockResults,
+    check: jest.fn().mockResolvedValue(mockResults.GRANTED),
+    request: jest.fn().mockResolvedValue(mockResults.GRANTED),
+    checkMultiple: jest.fn().mockImplementation(async (perms) => {
+      const result = {};
+      perms.forEach(p => {
+        result[p] = mockResults.GRANTED;
+      });
+      return result;
+    }),
+    requestMultiple: jest.fn().mockImplementation(async (perms) => {
+      const result = {};
+      perms.forEach(p => {
+        result[p] = mockResults.GRANTED;
+      });
+      return result;
+    }),
+  };
 });
+
+// Export mock for use in tests
+export { mockBleManager };

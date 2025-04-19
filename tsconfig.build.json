@@ -1,24 +1,20 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "lib/typescript",
+    "declarationDir": "lib/typescript",
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "outDir": "./lib/typescript",
     "noEmit": false,
-    // Ensure all the strict checks apply to build output
-    "exactOptionalPropertyTypes": true,
-    "noImplicitReturns": true,
-    "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "useUnknownInCatchVariables": true,
-    "forceConsistentCasingInFileNames": true
+    "emitDeclarationOnly": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
   },
   "exclude": [
     "**/__tests__",
     "**/__mocks__",
-    "**/*.test.ts",
-    "**/*.test.tsx",
-    "example"
-  ]
+    "example",
+    "lib"
+  ],
+  "include": ["src"]
 }

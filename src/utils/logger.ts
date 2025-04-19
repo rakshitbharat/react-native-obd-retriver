@@ -1,49 +1,22 @@
-import {
-  initLogger,
-  debug,
-  info,
-  warn,
-  error,
-} from 'react-native-beautiful-logs';
+import { log as LogLib, initSessionLog } from 'react-native-beautiful-logs';
 
-// Initialize logger with config
-export const logger = initLogger({
-  maxLogFiles: 50,
-  maxLogSizeMB: 10,
-  logRetentionDays: 30,
-  customSymbols: {
-    debug: '🔍',
-    info: 'ℹ️', // Changed symbol for info
-    warn: '⚠️',
-    error: '❌',
-  },
+// Initialize logging session
+initSessionLog().catch(error => {
+  console.error('Failed to initialize logging session:', error);
 });
 
-// Export wrapped logging functions
+// Export wrapped logging functions with ECU tag
 export const log = {
-  // Make context optional in the signature
-  debug: async (
-    message: string,
-    context?: Record<string, unknown>,
-  ): Promise<void> => {
-    await debug(`[ECU] ${message}`, context);
+  debug: (message: string, ...args: unknown[]): void => {
+    LogLib('debug', '[ECU]', message, ...args);
   },
-  info: async (
-    message: string,
-    context?: Record<string, unknown>,
-  ): Promise<void> => {
-    await info(`[ECU] ${message}`, context);
+  info: (message: string, ...args: unknown[]): void => {
+    LogLib('info', '[ECU]', message, ...args);
   },
-  warn: async (
-    message: string,
-    context?: Record<string, unknown>,
-  ): Promise<void> => {
-    await warn(`[ECU] ${message}`, context);
+  warn: (message: string, ...args: unknown[]): void => {
+    LogLib('warn', '[ECU]', message, ...args);
   },
-  error: async (
-    message: string,
-    context?: Record<string, unknown>,
-  ): Promise<void> => {
-    await error(`[ECU] ${message}`, context);
-  },
+  error: (message: string, ...args: unknown[]): void => {
+    LogLib('error', '[ECU]', message, ...args);
+  }
 };

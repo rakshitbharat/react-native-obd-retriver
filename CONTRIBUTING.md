@@ -92,4 +92,4 @@ If you need help with anything, feel free to:
 - Open a discussion on GitHub
 - Ask questions in relevant issues or pull requests
 
-Thank you for contributing!
+Thank you for contributing! 
