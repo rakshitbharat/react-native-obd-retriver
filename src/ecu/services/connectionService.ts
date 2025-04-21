@@ -8,7 +8,6 @@ import {
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL, // Import PROTOCOL enum
-  ECUConnectionStatus,
 } from '../utils/constants';
 import {
   cleanResponse,

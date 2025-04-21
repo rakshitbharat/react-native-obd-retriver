@@ -8,6 +8,7 @@ import React, {
   useEffect,
 } from 'react';
 import { useBluetooth } from 'react-native-bluetooth-obd-manager';
+import type { ExtendedPeripheral } from '../utils/types';
 
 import { log } from '../../utils/logger';
 // Import connectionService functions
@@ -122,16 +123,19 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   // Track Bluetooth device changes
   useEffect(() => {
     if (connectedDevice) {
+      const device = connectedDevice as ExtendedPeripheral;
       dispatch({
         type: ECUActionType.DEVICE_STATE_CHANGE,
         payload: {
           device: {
             connected: true,
-            services: connectedDevice.services?.map(s => s.uuid),
-            characteristics: connectedDevice.characteristics?.map(c => ({
-              service: c.service,
-              characteristic: c.characteristic,
-            })),
+            services: device.services?.map((s: { uuid: string }) => s.uuid),
+            characteristics: device.characteristics?.map(
+              (c: { service: string; characteristic: string }) => ({
+                service: c.service,
+                characteristic: c.characteristic,
+              }),
+            ),
           },
         },
       });
@@ -215,89 +219,96 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
   // --- Core ECU Connection Logic ---
   const connectWithECU = useCallback(async (): Promise<boolean> => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        await log.debug('[ECUContext] Starting ECU connection process');
-        dispatch({ type: ECUActionType.CONNECT_START });
+    try {
+      await log.debug('[ECUContext] Starting ECU connection process');
+      dispatch({ type: ECUActionType.CONNECT_START });
 
-        if (!isBluetoothConnected) {
-          const errorMsg =
-            'Bluetooth device not connected. Please connect via Bluetooth first.';
-          await log.error(`[ECUContext] Connection failed: ${errorMsg}`);
-          dispatch({
-            type: ECUActionType.CONNECT_FAILURE,
-            payload: { error: errorMsg },
-          });
-          resolve(false);
-          return;
-        }
-
-        const result = await connectToECU(sendCommand);
-
-        console.log('ECU Connection Result:', JSON.stringify(result, null, 2));
-
-        if (result.success) {
-          const payload: ECUActionPayload = {
-            protocol: result.protocol ?? null,
-            protocolName: result.protocolName ?? null,
-            voltage: parseVoltage(result.voltage),
-            detectedEcuAddresses: result.detectedEcus ?? [],
-            // No need for selectedEcuAddress in payload as reducer handles it
-          };
-
-          // Subscribe to store before dispatching
-          let unsubscribe: () => void;
-          const stateUpdatePromise = new Promise<void>(resolveUpdate => {
-            unsubscribe = ecuStore.subscribe(() => {
-              const currentState = ecuStore.getState();
-              if (
-                currentState.status === ECUConnectionStatus.CONNECTED &&
-                currentState.detectedEcuAddresses?.length > 0
-              ) {
-                unsubscribe?.();
-                resolveUpdate();
-              }
-            });
-          });
-
-          // Dispatch and wait for state update
-          dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
-
-          await stateUpdatePromise;
-
-          await log.info(
-            `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses.join(', ')}`,
-          );
-
-          resolve(true);
-        } else {
-          const errorMsg = result.error ?? 'ECU connection process failed.';
-          dispatch({
-            type: ECUActionType.CONNECT_FAILURE,
-            payload: { error: errorMsg },
-          });
-          await log.error(`[ECUContext] ECU Connection failed: ${errorMsg}`);
-          resolve(false);
-        }
-      } catch (error: unknown) {
+      if (!isBluetoothConnected || !sendCommand) {
         const errorMsg =
-          error instanceof Error
-            ? `ECU Connection exception: ${error.message}`
-            : `ECU Connection exception: ${String(error)}`;
-
+          'Bluetooth device not connected. Please connect via Bluetooth first.';
+        await log.error(`[ECUContext] Connection failed: ${errorMsg}`);
         dispatch({
           type: ECUActionType.CONNECT_FAILURE,
           payload: { error: errorMsg },
         });
-
-        await log.error('[ECUContext] Connection exception details:', {
-          error: errorMsg,
-          stack: error instanceof Error ? error.stack : undefined,
-        });
-        reject(error);
+        return false;
       }
-    });
-  }, [sendCommand, isBluetoothConnected, dispatch]);
+
+      const result = await connectToECU(sendCommand);
+
+      if (result.success) {
+        const payload: ECUActionPayload = {
+          protocol: result.protocol ?? null,
+          protocolName: result.protocolName ?? null,
+          voltage: parseVoltage(result.voltage),
+          detectedEcuAddresses: result.detectedEcus ?? [],
+        };
+
+        // Subscribe to store before dispatching
+        let unsubscribe: () => void;
+        const stateUpdatePromise = new Promise<void>(resolveUpdate => {
+          unsubscribe = ecuStore.subscribe(() => {
+            const currentState = ecuStore.getState();
+            if (currentState.device) {
+              const connectedDevice = currentState.device;
+              dispatch({
+                type: ECUActionType.DEVICE_STATE_CHANGE,
+                payload: {
+                  device: {
+                    ...connectedDevice,
+                    services: connectedDevice.services,
+                    characteristics: connectedDevice.characteristics,
+                  },
+                },
+              });
+
+              if (
+                currentState.status === ECUConnectionStatus.CONNECTED &&
+                (currentState.detectedEcuAddresses?.length ?? 0) > 0
+              ) {
+                unsubscribe?.();
+                resolveUpdate();
+              }
+            }
+          });
+        });
+
+        dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
+        await stateUpdatePromise;
+
+        await log.info(
+          `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses?.join(', ') ?? 'None'}`,
+        );
+
+        return true;
+      } else {
+        const errorMsg = result.error ?? 'ECU connection process failed.';
+        dispatch({
+          type: ECUActionType.CONNECT_FAILURE,
+          payload: { error: errorMsg },
+        });
+        await log.error(`[ECUContext] ECU Connection failed: ${errorMsg}`);
+        return false;
+      }
+    } catch (error: unknown) {
+      const errorMsg =
+        error instanceof Error
+          ? `ECU Connection exception: ${error.message}`
+          : `ECU Connection exception: ${String(error)}`;
+
+      dispatch({
+        type: ECUActionType.CONNECT_FAILURE,
+        payload: { error: errorMsg },
+      });
+
+      await log.error('[ECUContext] Connection exception details:', {
+        error: errorMsg,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+
+      throw error;
+    }
+  }, [isBluetoothConnected, sendCommand, dispatch]);
 
   // --- Core ECU Disconnect Logic ---
   const disconnectFromECU = useCallback(async (): Promise<void> => {

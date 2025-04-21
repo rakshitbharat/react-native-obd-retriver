@@ -9,29 +9,8 @@ import { Colors } from '../utils/colors';
 export const DTCManager: React.FC = () => {
   const { state } = useECU();
 
-  // Component rendering based on state
-  // Removed explicit check for state.status === ECUConnectionStatus.CONNECTED
-  // The component will render regardless of ECU connection status,
-  // but might display different info based on available state data.
-
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Diagnostic Trouble Codes</Text>
-      {/* Display available info from ECU state */}
-      <Text>Status: {state.status}</Text>
-      {state.status === ECUConnectionStatus.CONNECTED && (
-        <>
-          {state.activeProtocol && (
-            <Text>Protocol: {state.protocolName ?? state.activeProtocol}</Text>
-          )}
-          {state.deviceVoltage && <Text>Voltage: {state.deviceVoltage}</Text>}
-        </>
-      )}
-      {state.lastError && (
-        <Text style={styles.errorText}>Last Error: {state.lastError}</Text>
-      )}
-
-      {/* Display DTC loading/clearing status */}
+    <View>
       {state.dtcLoading && <Text>Loading DTCs...</Text>}
       {state.dtcClearing && <Text>Clearing DTCs...</Text>}
       {state.rawDTCLoading && <Text>Loading Raw DTCs...</Text>}
@@ -62,26 +41,11 @@ export const DTCManager: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: Colors.GRAY_BG,
-    borderRadius: 8,
-    margin: 16,
-    padding: 16,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
   subTitle: {
     fontSize: 16,
     fontWeight: '600',
     marginTop: 12,
     marginBottom: 4,
-  },
-  errorText: {
-    color: Colors.ERROR_TEXT,
-    marginTop: 8,
   },
   notConnectedText: {
     color: Colors.LIGHT_MUTED_TEXT,

@@ -1,7 +1,6 @@
 import { log } from '../../utils/logger';
 import { ecuStore } from '../context/ECUStore';
 import {
-  ELM_COMMANDS,
   DELAYS_MS,
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
@@ -10,49 +9,13 @@ import {
 } from '../utils/constants';
 import {
   isResponseError,
-  isResponseOk,
-  extractProtocolNumber,
-  extractEcuAddresses,
+  parseVinFromResponse,
+  assembleMultiFrameResponse,
 } from '../utils/helpers';
 
-// Add helper functions that were missing
-const assembleMultiFrameResponse = (response: string): string => {
-  // Remove headers and spaces, keep only data portion
-  const cleaned = response.replace(/\s+/g, '');
-  if (cleaned.includes('NODATA') || cleaned.length < 8) return cleaned;
-
-  // For CAN responses starting with headers like 7E8
-  if (cleaned.match(/^[0-9A-F]{3}/)) {
-    const lines = cleaned.split(/(?=[0-9A-F]{3})/);
-    return lines.map(line => line.substring(3)).join('');
-  }
-
-  return cleaned;
-};
-
-const parseVinFromResponse = (response: string): string | null => {
-  if (!response || response.includes('NODATA')) return null;
-
-  // Remove any spaces and convert to uppercase
-  const cleaned = response.replace(/\s+/g, '').toUpperCase();
-
-  // Look for 49 02 (VIN response identifier) followed by data
-  const vinMatch = cleaned.match(/49020[0-9A-F]+/);
-  if (!vinMatch) return null;
-
-  // Extract the data portion after 49 02
-  const vinHex = vinMatch[0].substring(4);
-  
-  // Convert hex to ASCII, 2 characters at a time
-  const vinChars = [];
-  for (let i = 0; i < vinHex.length; i += 2) {
-    const hex = vinHex.substring(i, i + 2);
-    vinChars.push(String.fromCharCode(parseInt(hex, 16)));
-  }
-
-  const vin = vinChars.join('');
-  return vin.length === 17 ? vin : null;
-};
+import type { ECUState } from '../utils/types';
+import type { ServiceMode } from './types';
+import type { SendCommandFunction } from '../utils/types';
 
 // Protocol/State constants needed internally, mirroring BaseDTCRetriever
 const PROTOCOL_TYPES = {
@@ -175,7 +138,11 @@ export class VINRetriever {
           ? HEADER_FORMATS.CAN_11BIT
           : HEADER_FORMATS.CAN_29BIT
         : HEADER_FORMATS.UNKNOWN;
-      this.ecuResponseHeader = currentState.selectedEcuAddress;
+      // Use selectedEcuAddress if available, otherwise use first from detectedEcuAddresses
+      this.ecuResponseHeader =
+        currentState.selectedEcuAddress ??
+        currentState.detectedEcuAddresses?.[0] ??
+        null;
       this.protocolState = PROTOCOL_STATES.READY;
     }
   }
@@ -283,7 +250,7 @@ export class VINRetriever {
       { fcsh: '7E8', fcsd: '300810', fcsm: '1' }, // BS=8, ST=16ms
       // Try 29-bit headers if needed
       { fcsh: '18DAF110', fcsd: '300000', fcsm: '1' },
-      { fcsh: '18DAF110', fcsd: '300810', fcsm: '1' }
+      { fcsh: '18DAF110', fcsd: '300810', fcsm: '1' },
     ];
 
     for (const config of configs) {
@@ -307,8 +274,8 @@ export class VINRetriever {
           this.ecuResponseHeader = config.fcsh;
           return true;
         }
-      } catch (error) {
-        continue;
+      } catch {
+        // Handle error case without using error variable
       }
     }
     return false;
@@ -318,7 +285,7 @@ export class VINRetriever {
     try {
       if (this.protocolState !== PROTOCOL_STATES.READY) {
         void log.warn(
-          `[${this.constructor.name}] Protocol not ready (State: ${this.protocolState}). Aborting command ${this.mode}.`
+          `[${this.constructor.name}] Protocol not ready (State: ${this.protocolState}). Aborting command ${this.mode}.`,
         );
         this.protocolState = PROTOCOL_STATES.ERROR;
         return null;
@@ -326,12 +293,12 @@ export class VINRetriever {
 
       const result = await this._sendCommandWithTiming(
         this.mode,
-        VINRetriever.DATA_TIMEOUT
+        VINRetriever.DATA_TIMEOUT,
       );
 
       if (result === null || this.isErrorResponse(result)) {
         void log.warn(
-          `[${this.constructor.name}] Error or no response for command ${this.mode}: ${result ?? 'null'}`
+          `[${this.constructor.name}] Error or no response for command ${this.mode}: ${result ?? 'null'}`,
         );
         if (
           result !== null &&
@@ -355,13 +322,13 @@ export class VINRetriever {
 
       if (needsFlowControlCheck) {
         void log.debug(
-          `[${this.constructor.name}] Detected potential CAN flow control issue. Response: ${result}. Attempting optimization...`
+          `[${this.constructor.name}] Detected potential CAN flow control issue. Response: ${result}. Attempting optimization...`,
         );
         const flowControlSuccess = await this._tryOptimizeFlowControl();
 
         if (flowControlSuccess) {
           void log.debug(
-            `[${this.constructor.name}] Retrying command ${this.mode} after flow control optimization...`
+            `[${this.constructor.name}] Retrying command ${this.mode} after flow control optimization...`,
           );
           const retryResult = await this._sendCommandWithTiming(
             this.mode,
@@ -370,33 +337,27 @@ export class VINRetriever {
 
           if (retryResult && !this.isErrorResponse(retryResult)) {
             void log.info(
-              `[${this.constructor.name}] Successfully received response after flow control optimization.`
+              `[${this.constructor.name}] Successfully received response after flow control optimization.`,
             );
             return retryResult;
           } else {
             void log.warn(
-              `[${this.constructor.name}] Command ${this.mode} still failed after optimization. Response: ${retryResult ?? 'null'}`
+              `[${this.constructor.name}] Command ${this.mode} still failed after optimization. Response: ${retryResult ?? 'null'}`,
             );
           }
         } else {
           void log.warn(
-            `[${this.constructor.name}] Flow control optimization failed. Proceeding with original response.`
+            `[${this.constructor.name}] Flow control optimization failed. Proceeding with original response.`,
           );
         }
       }
 
       void log.debug(
-        `[${this.constructor.name}] Processing final response for command ${this.mode}: ${result}`
+        `[${this.constructor.name}] Processing final response for command ${this.mode}: ${result}`,
       );
       return result;
-    } catch (error) {
-      void log.error(
-        `[${this.constructor.name}] Error during command execution:`,
-        {
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-        }
-      );
+    } catch {
+      // Handle error case without using error variable
       this.protocolState = PROTOCOL_STATES.ERROR;
       return null;
     }

@@ -1,3 +1,4 @@
+import { type Peripheral } from 'react-native-ble-manager';
 import type { PROTOCOL, ECUConnectionStatus } from './constants';
 import type { RawDTCResponse } from '../retrievers/BaseDTCRetriever';
 
@@ -86,11 +87,59 @@ export interface ECUActionPayload {
   };
 }
 
-// Update ECUAction type to use the new payload
+// Remove duplicate ECUAction type and combine into one
 export type ECUAction = {
   type: keyof typeof ECUActionType;
   payload?: ECUActionPayload;
 };
+
+export interface ExtendedPeripheral extends Peripheral {
+  services?: Array<{ uuid: string }>;
+  characteristics?: Array<{
+    service: string;
+    characteristic: string;
+  }>;
+}
+
+export interface ECUState {
+  status: ECUConnectionStatus;
+  activeProtocol: PROTOCOL | null;
+  protocolName: string | null;
+  voltage: number | null;
+  deviceVoltage: number | null;
+  lastError: string | null;
+  device?: {
+    connected: boolean;
+    services?: string[];
+    characteristics?: Array<{
+      service: string;
+      characteristic: string;
+    }>;
+  };
+  detectedEcuAddresses?: string[];
+  selectedEcuAddress?: string | null;
+  currentDTCs: string[];
+  pendingDTCs: string[];
+  rawCurrentDTCs: RawDTCResponse | null;
+  rawPendingDTCs: RawDTCResponse | null;
+  rawPermanentDTCs: RawDTCResponse | null;
+  dtcLoading: boolean;
+  dtcClearing: boolean;
+  rawDTCLoading: boolean;
+  initializationState: {
+    initAttempts: number;
+    maxInitAttempts: number;
+    lastInitCommand?: string;
+  };
+  ecuDetectionState: {
+    inProgress: boolean;
+    searchAttempts: number;
+    maxSearchAttempts: number;
+    lastAttemptTime?: number;
+    currentStep?: string;
+  };
+  error?: string;
+}
 
 /**
  * Configuration for header format in protocols
@@ -314,112 +363,9 @@ export interface ECUContextValue {
 }
 
 /**
- * Interface describing the state managed by the ECU reducer
- *
- * This interface represents the complete state of the ECU connection
- * and all related data. It is updated by the reducer in response to
- * dispatched actions.
- *
- * @example
- * ```typescript
- * const { state } = useECU();
- *
- * if (state.status === ECUConnectionStatus.CONNECTED) {
- *   console.log(`Connected with protocol: ${state.protocolName}`);
- *   console.log(`Vehicle voltage: ${state.deviceVoltage}`);
- *
- *   if (state.currentDTCs?.length > 0) {
- *     console.log(`Found DTCs: ${state.currentDTCs.join(', ')}`);
- *   }
- * }
- * ```
+ * Type definition for the sendCommand function used throughout the ECU module
+ * Aligns with react-native-bluetooth-obd-manager hook's sendCommand signature
  */
-export interface ECUState {
-  /** Current connection status (CONNECTED, DISCONNECTED, CONNECTING, ERROR) */
-  status: ECUConnectionStatus;
-
-  /** Active OBD protocol number (null when disconnected) */
-  activeProtocol: PROTOCOL | null;
-
-  /** Human-readable name of the active protocol (e.g., "ISO 15765-4 CAN (11 bit ID, 500 kbaud)") */
-  protocolName: string | null;
-
-  /** Last recorded error message (null when no error) */
-  lastError: string | null; // Rename to lastError to avoid conflict
-
-  /** Last read device voltage (e.g., "12.3V") */
-  deviceVoltage: number | null;
-
-  /** List of ECU addresses found during connection (e.g., ["7E8", "7E9"]) */
-  detectedEcuAddresses: string[];
-
-  /** Currently targeted ECU address for communication */
-  selectedEcuAddress: string | null;
-
-  // DTC related state (remains unchanged from initial definition)
-  /** Array of current/active DTC codes (Mode 03) or null if not fetched */
-  currentDTCs: string[] | null;
-
-  /** Array of pending DTC codes (Mode 07) or null if not fetched */
-  pendingDTCs: string[] | null;
-
-  /** Array of permanent DTC codes (Mode 0A) or null if not fetched */
-  permanentDTCs: string[] | null;
-
-  /** Whether DTCs are currently being fetched */
-  dtcLoading: boolean;
-
-  /** Whether DTCs are currently being cleared */
-  dtcClearing: boolean;
-
-  /** Raw response data for current DTCs (Mode 03) */
-  rawCurrentDTCs: RawDTCResponse | null;
-
-  /** Raw response data for pending DTCs (Mode 07) */
-  rawPendingDTCs: RawDTCResponse | null;
-
-  /** Raw response data for permanent DTCs (Mode 0A) */
-  rawPermanentDTCs: RawDTCResponse | null;
-
-  /** Whether raw DTCs are currently being fetched */
-  rawDTCLoading: boolean;
-
-  /** State tracking for the ECU detection process */
-  ecuDetectionState: {
-    /** Number of connection/detection attempts made */
-    searchAttempts: number;
-    /** Maximum allowed attempts before failing */
-    maxSearchAttempts: number;
-    /** Whether the detection process is currently active */
-    inProgress: boolean;
-    /** Timestamp of the last detection attempt */
-    lastAttemptTime: number;
-    /** List of protocol numbers attempted during detection */
-    protocolsAttempted: number[]; // Use number[] for protocol IDs
-    /** The last command sent during detection (e.g., '0100') */
-    lastCommand: string | null;
-    /** The last response received during detection */
-    lastResponse: string | null;
-    /** Current step/stage of the detection process (e.g., 'INIT', 'CHECK_RESPONSE', 'RETRY', 'COMPLETE') */
-    currentStep: string;
-    /** Number of attempts for the 0100 command specifically */
-    command0100Attempts: number;
-    /** Maximum number of attempts for the 0100 command */
-    maxCommand0100Attempts: number;
-  };
-  /** Initialization state tracking for ECU */
-  initializationState: ECUInitializationState;
-}
-
-export interface ECUInitializationState {
-  initAttempts: number;
-  maxInitAttempts: number;
-  lastInitCommand: string | null;
-  lastInitResponse: string | null;
-}
-
-// Type definition for the sendCommand function used throughout the ECU module
-// Aligns with react-native-bluetooth-obd-manager hook's sendCommand signature
 export type SendCommandFunction = (
   command: string,
 

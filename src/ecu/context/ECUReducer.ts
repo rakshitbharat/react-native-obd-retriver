@@ -42,75 +42,28 @@ export const initialState: ECUState = {
   status: ECUConnectionStatus.DISCONNECTED,
   activeProtocol: null,
   protocolName: null,
-  lastError: null,
+  voltage: null,
   deviceVoltage: null,
-  detectedEcuAddresses: [],
-  selectedEcuAddress: null,
-  ecuDetectionState: {
-    searchAttempts: 0,
-    maxSearchAttempts: 10, // Example value, should be configurable
-    inProgress: false,
-    lastAttemptTime: 0,
-    protocolsAttempted: [],
-    lastCommand: null,
-    lastResponse: null,
-    currentStep: 'IDLE',
-    command0100Attempts: 0, // Add this field
-    maxCommand0100Attempts: 5, // Add this field
-  },
-  initializationState: {
-    initAttempts: 0,
-    maxInitAttempts: 3,
-    lastInitCommand: null,
-    lastInitResponse: null,
-  },
-  // DTC related state remains unchanged
-  currentDTCs: null,
-  pendingDTCs: null,
-  permanentDTCs: null,
-  dtcLoading: false,
-  dtcClearing: false,
+  lastError: null,
+  currentDTCs: [],
+  pendingDTCs: [],
   rawCurrentDTCs: null,
   rawPendingDTCs: null,
   rawPermanentDTCs: null,
+  dtcLoading: false,
+  dtcClearing: false,
   rawDTCLoading: false,
+  initializationState: {
+    initAttempts: 0,
+    maxInitAttempts: 3,
+  },
+  ecuDetectionState: {
+    inProgress: false,
+    searchAttempts: 0,
+    maxSearchAttempts: 3,
+  },
 };
 
-/**
- * Reducer for ECU state management
- *
- * This reducer handles all state transitions for the ECU communication system,
- * processing various actions related to connection management, DTC operations,
- * and vehicle information retrieval.
- *
- * The reducer maintains immutability by creating new state objects for each action,
- * and implements careful error handling to ensure the application remains in a
- * consistent state even when operations fail.
- *
- * Action categories:
- *
- * 1. Connection actions:
- *    - CONNECT_START: Initiates ECU connection process
- *    - CONNECT_SUCCESS: Updates state with protocol and ECU information
- *    - CONNECT_FAILURE: Records connection errors
- *    - DISCONNECT: Resets state after disconnection
- *
- * 2. Information actions:
- *    - SET_ECU_INFO: Updates ECU metadata (voltage, etc.)
- *    - RESET: Performs complete state reset
- *
- * 3. DTC operations:
- *    - FETCH_DTCS_*: Manages parsed DTC retrieval state
- *    - CLEAR_DTCS_*: Handles DTC clearing operations
- *    - FETCH_RAW_DTCS_*: Manages raw DTC data retrieval
- *
- * Each action typically includes appropriate payload data that's carefully
- * extracted using nullish coalescing to ensure type safety and prevent runtime errors.
- *
- * @param state - Current ECU state
- * @param action - Action to process with optional payload
- * @returns New ECU state
- */
 export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
   switch (action.type) {
     case ECUActionType.CONNECT_START: {
@@ -127,8 +80,6 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
           inProgress: true,
           lastAttemptTime: Date.now(),
           currentStep: 'INIT',
-          lastCommand: null,
-          lastResponse: null,
         },
       };
     }
@@ -239,25 +190,26 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         deviceVoltage: action.payload?.voltage ?? state.deviceVoltage,
         // Can add other info updates here if needed
       };
-    case ECUActionType.RESET:
-      // Full reset to initial state, keeping configured max attempts
+    case ECUActionType.RESET: {
       return {
         ...initialState,
+        currentDTCs: [],
+        pendingDTCs: [],
+        // Keep other state parts intact or reset as necessary
         ecuDetectionState: {
           ...initialState.ecuDetectionState,
           maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
         },
       };
+    }
 
     // --- DTC related actions remain unchanged (as per requirement) ---
     case ECUActionType.FETCH_DTCS_START:
-      // Assuming this action is still needed for non-raw DTCs handled elsewhere
       return {
         ...state,
         dtcLoading: true,
-        currentDTCs: null,
-        pendingDTCs: null,
-        permanentDTCs: null,
+        currentDTCs: [],
+        pendingDTCs: [],
       };
     case ECUActionType.FETCH_DTCS_SUCCESS:
       // Assuming this action is still needed
@@ -278,17 +230,15 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
     case ECUActionType.CLEAR_DTCS_START:
       return { ...state, dtcClearing: true };
     case ECUActionType.CLEAR_DTCS_SUCCESS:
-      // Clear all DTC related states upon successful clear
       return {
         ...state,
         dtcClearing: false,
-        currentDTCs: [], // Reset parsed DTCs
+        currentDTCs: [],
         pendingDTCs: [],
-        permanentDTCs: [], // Clear permanent as well? Assuming Mode 04 might clear some types
-        rawCurrentDTCs: null, // Reset raw DTC data
+        rawCurrentDTCs: null,
         rawPendingDTCs: null,
         rawPermanentDTCs: null,
-        lastError: null, // Clear error on success
+        lastError: null,
       };
     case ECUActionType.CLEAR_DTCS_FAILURE:
       return {
