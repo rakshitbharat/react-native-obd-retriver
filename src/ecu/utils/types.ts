@@ -947,3 +947,8 @@ export interface ServiceMode {
    */
   timing?: Partial<TimingConfig>;
 }
+
+/**
+ * Helper type for state update promises
+ */
+export type StateUpdatePromise = Promise<void>;

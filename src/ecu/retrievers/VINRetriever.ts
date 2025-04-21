@@ -5,6 +5,7 @@ import {
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL,
+  PROTOCOL_TEST_COMMAND
 } from '../utils/constants';
 import {
   isResponseError,
@@ -752,6 +753,25 @@ export class VINRetriever {
    * Orchestrates configuration, command sending, retries, and parsing.
    */
   public async retrieveVIN(): Promise<string | null> {
+    // Add connection validation at start
+    if (!this.sendCommand) {
+      void log.error(`[${this.constructor.name}] No valid command sender available`);
+      return null;
+    }
+
+    // Verify communication still working
+    try {
+      const testResponse = await this.sendCommand(PROTOCOL_TEST_COMMAND, 2000);
+      if (!testResponse || isResponseError(testResponse)) {
+        void log.error(`[${this.constructor.name}] Connection appears to be lost`);
+        return null;
+      }
+    } catch (error) {
+      void log.error(`[${this.constructor.name}] Connection test failed`, { error });
+      return null;
+    }
+
+    // Continue with existing retrieval logic
     void log.debug(`[${this.constructor.name}] Attempting to retrieve VIN...`);
     let attempt = 0;
     const maxAttempts = 3; // Allow retries for the whole process

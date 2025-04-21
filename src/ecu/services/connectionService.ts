@@ -360,25 +360,22 @@ export const connectToECU = async (
     // Use a reasonable timeout for ECU response
     const testResponse = await sendCommand(testCmd, 5000);
 
-    if (testResponse && !isResponseError(testResponse)) {
-      // If the response is NO DATA, connection is likely still OK, just no PIDs supported
-      if (cleanResponse(testResponse).includes(RESPONSE_KEYWORDS.NO_DATA)) {
+    // Update test command validation to be more lenient
+    if (testResponse) {
+      // Consider any response containing 7E8, 7E9, 7E0 (CAN IDs) or 41 (response code) as valid
+      const cleaned = cleanResponse(testResponse).toUpperCase();
+      const isValidResponse = 
+        cleaned.includes('7E8') || 
+        cleaned.includes('7E9') || 
+        cleaned.includes('7E0') ||
+        cleaned.includes('41') ||
+        cleaned.includes('SEARCHING');
+
+      if (isValidResponse) {
         await log.info(
-          `[connectionService] Test command (${testCmd}) returned NO DATA. Connection likely OK, but no specific ECU response data.`,
+          `[connectionService] Test command successful with response: ${cleaned}`,
         );
-      } else {
-        // Extract ECU addresses from the response (might be single or multi-line)
         detectedEcus = extractEcuAddresses(testResponse);
-        if (detectedEcus.length > 0) {
-          await log.info(
-            `[connectionService] Detected ECU addresses: ${detectedEcus.join(', ')}`,
-          );
-        } else {
-          await log.warn(
-            `[connectionService] Test command (${testCmd}) successful, but no specific ECU addresses extracted from response: ${testResponse}`,
-          );
-          // Connection is likely okay, but we couldn't identify specific ECUs
-        }
       }
     } else {
       await log.warn(
@@ -475,16 +472,10 @@ export const disconnectFromECU = async (
     '[connectionService] Disconnecting from ECU (sending ATPC)...',
   );
   try {
-    // Send ATPC with a short timeout, response isn't critical
-    await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE, 1000);
+    // Send ATPC without timeout, let adapter handle timing
+    await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
     await log.debug('[connectionService] Protocol close command (ATPC) sent.');
-    // Optional: Send ATZ for a full reset after closing?
-    // From ECUConnector.resetDevice - it also sends ATD and ATZ
-    // await sendCommand(ELM_COMMANDS.DEFAULTS, 1000);
-    // await sendCommand(ELM_COMMANDS.RESET, 1000);
-    // Just sending ATPC is usually sufficient for session cleanup.
   } catch (error: unknown) {
-    // Log warning, but don't throw, as disconnect should proceed regardless
     const errorMsg = error instanceof Error ? error.message : String(error);
     await log.warn(
       '[connectionService] Error sending protocol close command (ATPC) during disconnect:',
