@@ -476,7 +476,9 @@ export class VINRetriever {
         // Send VIN request and handle response
         const rawResponse = await this._sendVINRequestAndProcess();
 
-        console.log('rawResponse', JSON.stringify(await this.bluetoothSendCommandRawChunked('0902')));
+        let rr = await this.bluetoothSendCommandRawChunked('0902');
+
+        console.log('rawResponse', JSON.stringify(rr));
 
         // If the request process failed (returned null)
         if (rawResponse === null) {
