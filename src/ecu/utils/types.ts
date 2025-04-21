@@ -59,11 +59,11 @@ export const ECUActionType = {
  * the ECU state management system.
  */
 export interface ECUActionPayload {
-  error?: string;
-  protocol?: number | null;
+  protocol?: PROTOCOL | null;
   protocolName?: string | null;
-  voltage?: number | null;
+  voltage?: number | null; // Changed to match ECUState
   detectedEcuAddresses?: string[];
+  error?: string;
   command?: string;
   response?: string;
   initCommand?: string;
@@ -124,179 +124,17 @@ export interface HeaderFormatConfig {
  * ```
  */
 export interface ECUContextValue {
-  /** The current state of the ECU connection and data */
   state: ECUState;
-
-  /**
-   * Connects to the vehicle's ECU
-   *
-   * This function handles the complete connection process:
-   * 1. Sends initialization commands to the OBD adapter
-   * 2. Detects and configures the appropriate OBD protocol
-   * 3. Establishes communication with the vehicle's ECUs
-   *
-   * @returns A Promise resolving to true if connection was successful, false otherwise
-   * @example
-   * ```typescript
-   * const success = await connectWithECU();
-   * if (success) {
-   *   console.log("Successfully connected to ECU");
-   * } else {
-   *   console.error("Failed to connect to ECU");
-   * }
-   * ```
-   */
   connectWithECU: () => Promise<boolean>;
-
-  /**
-   * Disconnects from the ECU
-   *
-   * Sends the appropriate protocol close command and resets the internal state.
-   * This does not disconnect the Bluetooth connection itself.
-   *
-   * @returns A Promise that resolves when disconnection is complete
-   * @example
-   * ```typescript
-   * await disconnectECU();
-   * console.log("Disconnected from ECU");
-   * ```
-   */
   disconnectECU: () => Promise<void>;
-
-  /**
-   * Updates ECU information like voltage
-   *
-   * Retrieves the latest information from the ECU/adapter and updates the state.
-   *
-   * @returns A Promise that resolves when information has been updated
-   * @example
-   * ```typescript
-   * await getECUInformation();
-   * console.log(`Vehicle voltage: ${state.deviceVoltage}`);
-   * ```
-   */
-  getECUInformation: () => Promise<void>;
-
-  /**
-   * Gets information about the currently active protocol
-   *
-   * @returns Object containing protocol number and name
-   * @example
-   * ```typescript
-   * const { protocol, name } = getActiveProtocol();
-   * console.log(`Using protocol: ${name} (${protocol})`);
-   * ```
-   */
-  getActiveProtocol: () => { protocol: PROTOCOL | null; name: string | null };
-
-  /**
-   * Retrieves the Vehicle Identification Number (VIN)
-   *
-   * Sends Mode 09 PID 02 command to request the VIN from the vehicle.
-   *
-   * @returns Promise resolving to the VIN string or null if it could not be read
-   * @example
-   * ```typescript
-   * const vin = await getVIN();
-   * if (vin) {
-   *   console.log(`Vehicle VIN: ${vin}`);
-   * } else {
-   *   console.error("Could not retrieve VIN");
-   * }
-   * ```
-   */
-  getVIN: () => Promise<string | null>;
-
-  /**
-   * Clears Diagnostic Trouble Codes (DTCs)
-   *
-   * Sends Mode 04 command to clear all DTCs and reset the MIL (check engine light).
-   *
-   * @param skipVerification - Optional flag to skip verification of clear success
-   * @returns Promise resolving to true if clearing was successful, false otherwise
-   * @example
-   * ```typescript
-   * const success = await clearDTCs();
-   * if (success) {
-   *   console.log("Successfully cleared DTCs");
-   * } else {
-   *   console.error("Failed to clear DTCs");
-   * }
-   * ```
-   */
-
   clearDTCs: (skipVerification?: boolean) => Promise<boolean>;
-
-  /**
-   * Gets raw current DTCs (Mode 03)
-   *
-   * Retrieves DTCs that are currently active.
-   *
-   * @returns Promise resolving to raw DTC response or null if unavailable
-   * @example
-   * ```typescript
-   * const dtcs = await getRawCurrentDTCs();
-   * if (dtcs && dtcs.rawString) {
-   *   console.log(`Raw DTCs: ${dtcs.rawString}`);
-   * }
-   * ```
-   */
+  getVIN: () => Promise<string | null>;
   getRawCurrentDTCs: () => Promise<RawDTCResponse | null>;
-
-  /**
-   * Gets raw pending DTCs (Mode 07)
-   *
-   * Retrieves DTCs that have occurred but are not currently active.
-   *
-   * @returns Promise resolving to raw DTC response or null if unavailable
-   * @example
-   * ```typescript
-   * const dtcs = await getRawPendingDTCs();
-   * if (dtcs && dtcs.rawString) {
-   *   console.log(`Raw pending DTCs: ${dtcs.rawString}`);
-   * }
-   * ```
-   */
-  getRawPendingDTCs: () => Promise<RawDTCResponse | null>;
-
-  /**
-   * Gets raw permanent DTCs (Mode 0A)
-   *
-   * Retrieves DTCs that cannot be cleared with Mode 04.
-   *
-   * @returns Promise resolving to raw DTC response or null if unavailable
-   * @example
-   * ```typescript
-   * const dtcs = await getRawPermanentDTCs();
-   * if (dtcs && dtcs.rawString) {
-   *   console.log(`Raw permanent DTCs: ${dtcs.rawString}`);
-   * }
-   * ```
-   */
-  getRawPermanentDTCs: () => Promise<RawDTCResponse | null>;
-
-  /**
-   * Sends a raw command to the OBD adapter
-   *
-   * This is a low-level function that allows sending arbitrary commands.
-   * Use with caution as improper commands may disrupt the connection.
-   *
-   * @param command - The command string to send (e.g., "0100", "ATDPN")
-   * @param options - Optional timeout in ms or options object
-   * @returns Promise resolving to the response string or null on failure
-   * @example
-   * ```typescript
-   * // Get supported PIDs (Mode 01)
-   * const response = await sendCommand("0100");
-   * if (response) {
-   *   console.log(`Response: ${response}`);
-   * }
-   *
-   * // With custom timeout
-   * const response = await sendCommand("0902", { timeout: 10000 });
-   * ```
-   */
   sendCommand: SendCommandFunction;
+  getActiveProtocol: () => { protocol: PROTOCOL | null; name: string | null };
+  getECUInformation: () => Promise<void>;
+  getRawPendingDTCs: () => Promise<RawDTCResponse | null>;
+  getRawPermanentDTCs: () => Promise<RawDTCResponse | null>;
 }
 
 /**

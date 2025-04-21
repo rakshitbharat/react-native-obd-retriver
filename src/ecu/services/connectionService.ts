@@ -312,117 +312,145 @@ export const initializeAdapter = async (
  * @param sendCommand - Function to send commands to the OBD adapter
  * @returns Promise resolving to a ConnectionResult object with connection details
  */
+const CONNECTION_TIMEOUT_MS = 30000; // 30 seconds total timeout
+
 export const connectToECU = async (
   sendCommand: SendCommandFunction,
 ): Promise<ConnectionResult> => {
-  await log.info('[connectionService] Attempting to connect to ECU...');
+  // Create a timeout promise
+  const timeoutPromise = new Promise<ConnectionResult>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Connection attempt timed out after 30 seconds'));
+    }, CONNECTION_TIMEOUT_MS);
+  });
 
-  try {
-    // 1. Initialize Adapter
-    const initSuccess = await initializeAdapter(sendCommand);
-    if (!initSuccess) {
-      return { success: false, error: 'Adapter initialization failed' };
-    }
+  // Create the main connection promise
+  const connectionPromise = (async (): Promise<ConnectionResult> => {
+    try {
+      await log.info('[connectionService] Attempting to connect to ECU...');
 
-    // 2. Detect and Set Protocol using ProtocolManager
-    const protocolManager = new ProtocolManager(sendCommand);
-    const protocolResult = await protocolManager.detectAndSetProtocol();
+      // 1. Initialize Adapter
+      const initSuccess = await initializeAdapter(sendCommand);
+      if (!initSuccess) {
+        return { success: false, error: 'Adapter initialization failed' };
+      }
 
-    if (!protocolResult || protocolResult.protocol === null) {
-      return { success: false, error: 'Protocol detection failed' };
-    }
+      // 2. Detect and Set Protocol using ProtocolManager
+      const protocolManager = new ProtocolManager(sendCommand);
+      const protocolResult = await protocolManager.detectAndSetProtocol();
 
-    const { protocol, name: protocolName } = protocolResult;
+      if (!protocolResult || protocolResult.protocol === null) {
+        return { success: false, error: 'Protocol detection failed' };
+      }
 
-    // 3. Apply Protocol Specific Settings
-    await protocolManager.configureProtocolSettings(protocol);
+      const { protocol, name: protocolName } = protocolResult;
 
-    // 4. Get Adapter Info (Voltage)
-    const adapterInfo = await getAdapterInfo(sendCommand);
-    if (adapterInfo.voltage === null) {
-      await log.error('[connectionService] Failed to read voltage after protocol setup.');
-      return {
-        success: false,
-        error: 'Adapter unresponsive after protocol setup',
+      // 3. Apply Protocol Specific Settings
+      await protocolManager.configureProtocolSettings(protocol);
+
+      // 4. Get Adapter Info (Voltage)
+      const adapterInfo = await getAdapterInfo(sendCommand);
+      if (adapterInfo.voltage === null) {
+        await log.error('[connectionService] Failed to read voltage after protocol setup.');
+        return {
+          success: false,
+          error: 'Adapter unresponsive after protocol setup',
+          protocol,
+          protocolName,
+        };
+      }
+
+      // 5. Final check / ECU discovery - More robust handling
+      let detectedEcus: string[] = [];
+      try {
+        const testCmd = STANDARD_PIDS.SUPPORTED_PIDS_1;
+        await log.debug(`[connectionService] Sending final test command: ${testCmd}`);
+        const testResponse = await sendCommand(testCmd, 5000);
+
+        if (testResponse) {
+          const cleaned = cleanResponse(testResponse).toUpperCase();
+          const isValidResponse = cleaned.includes('7E8') ||
+            cleaned.includes('7E9') ||
+            cleaned.includes('7E0') ||
+            cleaned.includes('41') ||
+            cleaned.includes('SEARCHING');
+
+          if (isValidResponse) {
+            await log.info(`[connectionService] Test command successful with response: ${cleaned}`);
+            // Extract ECU addresses more carefully
+            detectedEcus = extractEcuAddresses(testResponse)
+              .filter(addr => addr && addr.length >= 3)  // Ensure valid addresses
+              .map(addr => addr.toUpperCase());         // Normalize format
+            
+            await log.debug(`[connectionService] Detected ECU addresses: ${detectedEcus.join(', ') || 'none'}`);
+          }
+        }
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        await log.warn('[connectionService] Error during final ECU check:', { error: errorMsg });
+        // Don't fail the connection, but log the issue
+      }
+
+      // 6. Final delay and cleanup
+      await delay(200); // Increased delay to ensure command completion
+
+      // 7. Send a protocol close and reopen if needed
+      try {
+        await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
+        await delay(100);
+        await sendCommand(`ATSP${protocol.toString(16)}`);
+        await delay(100);
+      } catch (error) {
+        await log.warn('[connectionService] Protocol reset sequence warning:', { error });
+      }
+
+      const result: ConnectionResult = {
+        success: true,
         protocol,
         protocolName,
+        voltage: adapterInfo.voltage,
+        detectedEcus: detectedEcus.length > 0 ? detectedEcus : undefined
       };
-    }
 
-    // 5. Final check / ECU discovery - More robust handling
-    let detectedEcus: string[] = [];
-    try {
-      const testCmd = STANDARD_PIDS.SUPPORTED_PIDS_1;
-      await log.debug(`[connectionService] Sending final test command: ${testCmd}`);
-      const testResponse = await sendCommand(testCmd, 5000);
+      await log.info('[connectionService] Connection established successfully:', result);
+      return result;
 
-      if (testResponse) {
-        const cleaned = cleanResponse(testResponse).toUpperCase();
-        const isValidResponse = cleaned.includes('7E8') ||
-          cleaned.includes('7E9') ||
-          cleaned.includes('7E0') ||
-          cleaned.includes('41') ||
-          cleaned.includes('SEARCHING');
-
-        if (isValidResponse) {
-          await log.info(`[connectionService] Test command successful with response: ${cleaned}`);
-          // Extract ECU addresses more carefully
-          detectedEcus = extractEcuAddresses(testResponse)
-            .filter(addr => addr && addr.length >= 3)  // Ensure valid addresses
-            .map(addr => addr.toUpperCase());         // Normalize format
-          
-          await log.debug(`[connectionService] Detected ECU addresses: ${detectedEcus.join(', ') || 'none'}`);
-        }
-      }
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      await log.warn('[connectionService] Error during final ECU check:', { error: errorMsg });
-      // Don't fail the connection, but log the issue
+      await log.error('[connectionService] Critical error during connection:', { error: errorMsg });
+      
+      // Ensure cleanup happens
+      try {
+        await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
+      } catch {
+        // Ignore cleanup errors
+      }
+      
+      return { 
+        success: false, 
+        error: `Connection failed: ${errorMsg}` 
+      };
     }
+  })();
 
-    // 6. Final delay and cleanup
-    await delay(200); // Increased delay to ensure command completion
-
-    // 7. Send a protocol close and reopen if needed
-    try {
-      await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
-      await delay(100);
-      await sendCommand(`ATSP${protocol.toString(16)}`);
-      await delay(100);
-    } catch (error) {
-      // Log but continue
-      await log.warn('[connectionService] Protocol reset sequence warning:', { error });
-    }
-
-    const result: ConnectionResult = {
-      success: true,
-      protocol,
-      protocolName,
-      voltage: adapterInfo.voltage,
-      detectedEcus: detectedEcus.length > 0 ? detectedEcus : undefined
-    };
-
-    await log.info(
-      `[connectionService] Connection established successfully:`,
-      result
-    );
-
-    return result;
-
-  } catch (error: unknown) {
+  // Race between timeout and connection
+  try {
+    return await Promise.race([connectionPromise, timeoutPromise]);
+  } catch (error) {
+    // Handle timeout or other errors
     const errorMsg = error instanceof Error ? error.message : String(error);
-    await log.error('[connectionService] Critical error during connection:', { error: errorMsg });
+    await log.error('[connectionService] Connection process failed:', { error: errorMsg });
     
-    // Attempt cleanup on error
+    // Attempt cleanup on timeout
     try {
       await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
     } catch {
       // Ignore cleanup errors
     }
     
-    return { 
-      success: false, 
-      error: `Connection failed: ${errorMsg}` 
+    return {
+      success: false,
+      error: `Connection failed: ${errorMsg}`
     };
   }
 };
