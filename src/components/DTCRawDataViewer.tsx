@@ -1,7 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View, ScrollView } from 'react-native';
 
-import type { RawDTCResponse } from '../ecu/retrievers/BaseDTCRetriever';
+import type { RawDTCResponse } from '../ecu/retrievers/types';
 import { Colors } from '../utils/colors';
 
 interface DTCRawDataViewerProps {

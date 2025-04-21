@@ -941,7 +941,7 @@ export const getRawDTCs = async (
     // Return the structured raw response
     return {
       rawString: rawResponse,
-      rawResponse: rawBytes, // Raw byte values of the string
+      rawResponse: rawBytes.map(byte => byte.toString(16).padStart(2, '0')), // Convert numbers to hex strings
       response: responseFramesAsHexArrays, // Parsed into lines->hex parts (basic)
       rawBytesResponseFromSendCommand: responseFramesAsHexArrays, // Duplicate for compatibility? Review BaseDTCRetriever usage.
       isCan: isCan,

@@ -1,8 +1,7 @@
 import { log } from '../../utils/logger';
-import { ECUConnectionStatus } from '../utils/constants'; // Import PROTOCOL if needed
+import { ECUConnectionStatus } from '../utils/constants';
 import { ECUActionType } from '../utils/types';
-
-import type { ECUAction, ECUState } from '../utils/types';
+import type { ECUAction, ECUState, RawDTCResponse } from '../utils/types';
 
 /**
  * Initial state for the ECU context reducer
@@ -478,19 +477,21 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
       return {
         ...state,
         rawDTCLoading: false,
-        rawCurrentDTCs: action.payload?.data ?? null,
+        rawCurrentDTCs: action.payload?.data as RawDTCResponse | null,
       };
+
     case ECUActionType.FETCH_RAW_PENDING_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPendingDTCs: action.payload?.data ?? null,
+        rawPendingDTCs: action.payload?.data as RawDTCResponse | null,
       };
+
     case ECUActionType.FETCH_RAW_PERMANENT_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPermanentDTCs: action.payload?.data ?? null,
+        rawPermanentDTCs: action.payload?.data as RawDTCResponse | null,
       };
     case ECUActionType.FETCH_RAW_DTCS_FAILURE:
       return {

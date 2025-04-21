@@ -1,5 +1,5 @@
 import type { PROTOCOL, ECUConnectionStatus } from './constants';
-import type { RawDTCResponse } from '../retrievers/BaseDTCRetriever';
+import type { RawDTCResponse } from '../retrievers/types';
 
 export { RawDTCResponse }; // Re-export for convenience
 
@@ -64,8 +64,12 @@ export interface ECUActionPayload {
   protocolName?: string | null;
   voltage?: number | null;
   detectedEcuAddresses?: string[];
-  data?: unknown;
-  dtcs?: string[];
+  command?: string;
+  response?: string;
+  initCommand?: string;
+  initResponse?: string;
+  data?: RawDTCResponse | null;
+  dtcs?: string[]; // Add dtcs property
 }
 
 // Update ECUAction type to use the new payload
@@ -730,11 +734,11 @@ export interface ProtocolConfig {
  *
  *   // Adaptive timing configuration
  *   adaptiveMode: 1,       // Use ELM's adaptive timing
- *   adaptiveStart: 32,     // Initial delay (ms)
- *   adaptiveMin: 8,        // Minimum delay (ms)
+ *   adaptiveStart: 20,     // Initial delay (ms)
+ *   adaptiveMin: 10,        // Minimum delay (ms)
  *   adaptiveMax: 200,      // Maximum delay (ms)
- *   increment: 8,          // Increment step (ms)
- *   decrement: 4,          // Decrement step (ms)
+ *   increment: 4,          // Increment step (ms)
+ *   decrement: 2,          // Decrement step (ms)
  *
  *   // Response timeout
  *   responseTimeoutMs: 100 // Response timeout (ms)

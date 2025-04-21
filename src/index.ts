@@ -41,11 +41,8 @@
 
 // React Hooks
 export { useECU } from './ecu/hooks/useECU';
-export { useDTCRetriever } from './ecu/hooks/useDTCRetriever';
-
-// Context Components
-export { ECUContext, ECUProvider } from './ecu/context/ECUContext';
-
-// Export all types, constants, and utilities from the barrel file
-// This includes ECUState, ECUContextValue, ECUConnectionStatus, OBD_MODE, etc.
-export * from './ecu/types';
+// Export types from retrievers namespace
+export * as retrievers from './ecu/retrievers';
+// Export types from utils namespace
+export * as utils from './ecu/utils/types';
+export * from './utils/colors';

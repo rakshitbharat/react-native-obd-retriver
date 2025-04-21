@@ -471,7 +471,7 @@ export class ProtocolManager {
     }
   }
 
-  private extractProtocolNumber(response: string): number | null {
+  private extractProtocolNumber(response: string | null): number | null {
     if (!response) return null;
     const match = response.match(/[AP]\d+/);
     return match ? parseInt(match[0].substring(1)) : null;
@@ -479,7 +479,14 @@ export class ProtocolManager {
 
   private isResponseError(response: string): boolean {
     if (!response) return true;
-    const errorPatterns = ['ERROR', 'UNABLE TO CONNECT', 'NO DATA', 'CAN ERROR'];
-    return errorPatterns.some(pattern => response.toUpperCase().includes(pattern));
+    const errorPatterns = [
+      'ERROR',
+      'UNABLE TO CONNECT',
+      'NO DATA',
+      'CAN ERROR',
+    ];
+    return errorPatterns.some(pattern =>
+      response.toUpperCase().includes(pattern),
+    );
   }
 }
