@@ -761,22 +761,6 @@ export class VINRetriever {
       return null;
     }
 
-    // Verify communication still working
-    try {
-      const testResponse = await this.sendCommand(PROTOCOL_TEST_COMMAND, 2000);
-      if (!testResponse || isResponseError(testResponse)) {
-        void log.error(
-          `[${this.constructor.name}] Connection appears to be lost`,
-        );
-        return null;
-      }
-    } catch (error) {
-      void log.error(`[${this.constructor.name}] Connection test failed`, {
-        error,
-      });
-      return null;
-    }
-
     // Continue with existing retrieval logic
     void log.debug(`[${this.constructor.name}] Attempting to retrieve VIN...`);
     let attempt = 0;

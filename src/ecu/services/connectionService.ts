@@ -9,6 +9,7 @@ import {
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL, // Import PROTOCOL enum
+  ECUConnectionStatus,
 } from '../utils/constants';
 import {
   cleanResponse,
@@ -550,13 +551,11 @@ export const getVehicleVIN = async (
   await log.debug(
     '[connectionService] Attempting to retrieve VIN using VINRetriever...',
   );
-
   try {
     // Create an instance of the VINRetriever
     const vinRetriever = new VINRetriever(sendCommand);
 
     // Call the retriever's method to get the VIN
-    // This method handles configuration, sending '0902', flow control, retries, and parsing
     const vin = await vinRetriever.retrieveVIN();
 
     if (vin) {
