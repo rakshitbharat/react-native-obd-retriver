@@ -39,8 +39,9 @@
  * ```
  */
 
-// React Hooks
+// React Hooks and Components
 export { useECU } from './ecu/hooks/useECU';
+export { ECUProvider } from './ecu/context/ECUContext';
 // Export types from retrievers namespace
 export * as retrievers from './ecu/retrievers';
 // Export types from utils namespace
