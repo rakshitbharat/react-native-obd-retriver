@@ -221,7 +221,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         dispatch({ type: ECUActionType.CONNECT_START });
 
         if (!isBluetoothConnected) {
-          const errorMsg = 'Bluetooth device not connected. Please connect via Bluetooth first.';
+          const errorMsg =
+            'Bluetooth device not connected. Please connect via Bluetooth first.';
           await log.error(`[ECUContext] Connection failed: ${errorMsg}`);
           dispatch({
             type: ECUActionType.CONNECT_FAILURE,
@@ -261,13 +262,13 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
           // Dispatch and wait for state update
           dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
-          
+
           await stateUpdatePromise;
-          
+
           await log.info(
             `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses.join(', ')}`,
           );
-          
+
           resolve(true);
         } else {
           const errorMsg = result.error ?? 'ECU connection process failed.';
@@ -279,9 +280,10 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           resolve(false);
         }
       } catch (error: unknown) {
-        const errorMsg = error instanceof Error
-          ? `ECU Connection exception: ${error.message}`
-          : `ECU Connection exception: ${String(error)}`;
+        const errorMsg =
+          error instanceof Error
+            ? `ECU Connection exception: ${error.message}`
+            : `ECU Connection exception: ${String(error)}`;
 
         dispatch({
           type: ECUActionType.CONNECT_FAILURE,

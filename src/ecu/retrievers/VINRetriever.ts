@@ -1,22 +1,16 @@
 import { log } from '../../utils/logger';
+import { ecuStore } from '../context/ECUStore';
 import {
   ELM_COMMANDS,
   DELAYS_MS,
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL,
-  PROTOCOL_TEST_COMMAND,
+  ECUConnectionStatus,
 } from '../utils/constants';
-import {
-  isResponseError,
-  isResponseOk,
-  extractProtocolNumber,
-  extractEcuAddresses, // Needed for dynamic header extraction
-  assembleMultiFrameResponse,
-  parseVinFromResponse,
-} from '../utils/helpers';
 
-import type { ServiceMode } from './types'; // Keep ServiceMode type
+import type { ECUState } from '../utils/types'; // Add ECU state type
+import type { ServiceMode } from './types';
 import type { SendCommandFunction } from '../utils/types';
 
 // Protocol/State constants needed internally, mirroring BaseDTCRetriever
@@ -117,8 +111,32 @@ export class VINRetriever {
   private protocolState: ProtocolState = PROTOCOL_STATES.INITIALIZED;
   private isHeaderEnabled: boolean = false; // Must be true for VIN retrieval
 
+  // Add ecuState property
+  private readonly ecuState: ECUState;
+
   constructor(sendCommand: SendCommandFunction) {
     this.sendCommand = sendCommand;
+    const currentState = ecuStore.getState();
+    this.ecuState = currentState;
+
+    // Initialize state from existing ECU connection
+    if (
+      currentState.status === ECUConnectionStatus.CONNECTED &&
+      currentState.activeProtocol !== null
+    ) {
+      this.protocolNumber = currentState.activeProtocol;
+      this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
+      this.protocolType = this.isCan
+        ? PROTOCOL_TYPES.CAN
+        : PROTOCOL_TYPES.UNKNOWN;
+      this.headerFormat = this.isCan
+        ? this.protocolNumber % 2 === 0
+          ? HEADER_FORMATS.CAN_11BIT
+          : HEADER_FORMATS.CAN_29BIT
+        : HEADER_FORMATS.UNKNOWN;
+      this.ecuResponseHeader = currentState.selectedEcuAddress;
+      this.protocolState = PROTOCOL_STATES.READY;
+    }
   }
 
   /**
@@ -131,300 +149,47 @@ export class VINRetriever {
   }
 
   /**
-   * Configure adapter specifically for VIN retrieval.
-   * Includes reset, basic settings, protocol detection, ECU header detection, and specific config.
-   */
-  private async _configureAdapterForVIN(): Promise<boolean> {
-    void log.info(
-      // Use void for fire-and-forget log promises
-      `[${this.constructor.name}] Configuring adapter for VIN retrieval...`,
-    );
-    this.protocolState = PROTOCOL_STATES.CONFIGURING;
-
-    // Step 1: Reset the adapter
-    try {
-      await this.sendCommand(ELM_COMMANDS.RESET);
-      await this.delay(DELAYS_MS.RESET);
-    } catch (error) {
-      void log.warn(`[${this.constructor.name}] Reset warning:`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    // Step 2: Basic communication parameters
-    const setupCommands = [
-      { cmd: ELM_COMMANDS.ECHO_OFF, desc: 'Disable echo' },
-      { cmd: ELM_COMMANDS.LINEFEEDS_OFF, desc: 'Disable linefeeds' },
-      { cmd: ELM_COMMANDS.SPACES_OFF, desc: 'Disable spaces' },
-      // Headers ON is crucial for multi-frame VIN responses
-      {
-        cmd: ELM_COMMANDS.HEADERS_ON,
-        desc: 'Enable headers (Required for VIN)',
-      },
-      {
-        cmd: ELM_COMMANDS.ADAPTIVE_TIMING_1,
-        desc: 'Set adaptive timing mode 1',
-      },
-    ];
-
-    for (const { cmd, desc } of setupCommands) {
-      void log.debug(`[${this.constructor.name}] Setup: ${desc}`);
-      try {
-        const response = await this.sendCommand(cmd, 2000);
-        if (cmd === ELM_COMMANDS.HEADERS_ON) this.isHeaderEnabled = true;
-        // Basic validation of setup command responses
-        if (
-          response &&
-          !isResponseOk(response) &&
-          !this.isErrorResponse(response) && // Check internal error status too
-          response.trim() !== '?'
-        ) {
-          void log.warn(
-            `[${this.constructor.name}] Unexpected response for ${cmd}: ${response}`,
-          );
-        } else if (response?.trim() === '?') {
-          void log.warn(
-            `[${this.constructor.name}] Command "${cmd}" returned '?', possibly unsupported.`,
-          );
-        }
-      } catch (error) {
-        void log.error(
-          `[${this.constructor.name}] Error during setup command ${cmd}:`,
-          { error: error instanceof Error ? error.message : String(error) },
-        );
-        // If essential command like Headers ON fails, abort configuration
-        if (cmd === ELM_COMMANDS.HEADERS_ON) {
-          this.protocolState = PROTOCOL_STATES.ERROR;
-          return false;
-        }
-      }
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
-    }
-
-    // Step 3: Detect protocol
-    const protocolDetected = await this._detectProtocol();
-    if (!protocolDetected) {
-      void log.error(`[${this.constructor.name}] Protocol detection failed.`);
-      this.protocolState = PROTOCOL_STATES.ERROR;
-      return false;
-    }
-
-    // Step 3.5: (NEW) Detect actual ECU response header if using CAN
-    if (this.isCan) {
-      await this._detectEcuResponseHeader(); // Attempt to find the real header
-    }
-
-    // Step 4: Protocol-specific configuration (including default Flow Control for CAN)
-    await this._configureForProtocol(); // Uses detected header if available
-
-    // Step 5: Set protocol state to ready
-    this.protocolState = PROTOCOL_STATES.READY;
-    void log.info(
-      `[${this.constructor.name}] Adapter configuration complete. Protocol: ${this.protocolType} (${this.protocolNumber}), isCAN: ${this.isCan}, Headers: ${this.isHeaderEnabled}`,
-      this.ecuResponseHeader ? { ecuHeader: this.ecuResponseHeader } : {},
-    );
-    return true;
-  }
-
-  /**
-   * (NEW) Attempts to detect the primary ECU response header by sending 0100.
-   * Stores the result in this.ecuResponseHeader.
-   */
-  private async _detectEcuResponseHeader(): Promise<void> {
-    if (!this.isCan) return; // Only relevant for CAN
-
-    void log.debug(
-      `[${this.constructor.name}] Attempting to detect ECU response header (0100)...`,
-    );
-    try {
-      const response = await this._sendCommandWithTiming(
-        STANDARD_PIDS.SUPPORTED_PIDS_1,
-        5000,
-      ); // Use 0100
-      if (response && !this.isErrorResponse(response)) {
-        const addresses = extractEcuAddresses(response);
-        if (addresses.length > 0 && addresses[0] !== undefined) {
-          this.ecuResponseHeader = addresses[0]; // Now safely assignable to string | null
-          void log.info(
-            `[${this.constructor.name}] Detected ECU response header: ${this.ecuResponseHeader}`,
-          );
-        } else {
-          void log.warn(
-            `[${this.constructor.name}] Command 0100 successful, but no valid ECU header extracted from response: ${response}`,
-          );
-        }
-      } else {
-        void log.warn(
-          `[${this.constructor.name}] Failed to get valid response for 0100 header detection: ${response ?? 'null'}`,
-        );
-      }
-    } catch (error) {
-      void log.error(
-        `[${this.constructor.name}] Error during ECU header detection (0100):`,
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-    }
-  }
-
-  /**
-   * Determine the active protocol by querying the adapter (ATDPN).
-   * Updates internal state variables.
-   */
-  private async _detectProtocol(): Promise<boolean> {
-    void log.debug(`[${this.constructor.name}] Detecting protocol (ATDPN)...`);
-    try {
-      const response = await this.sendCommand(
-        ELM_COMMANDS.GET_PROTOCOL_NUM,
-        2000,
-      );
-      const protocolNum = extractProtocolNumber(response);
-
-      // Check internal error status for the response
-      if (protocolNum === null || this.isErrorResponse(response)) {
-        void log.warn(
-          `[${this.constructor.name}] Failed to get protocol number. Response: ${response ?? 'null'}`,
-        );
-        this._updateProtocolInfo(-1); // Set to UNKNOWN
-        return false;
-      }
-
-      this._updateProtocolInfo(protocolNum);
-      void log.debug(
-        `[${this.constructor.name}] Protocol detection complete. Number: ${this.protocolNumber}, Type: ${this.protocolType}, isCAN: ${this.isCan}, Header Format: ${this.headerFormat}`,
-      );
-      return this.protocolType !== PROTOCOL_TYPES.UNKNOWN;
-    } catch (error) {
-      void log.error(`[${this.constructor.name}] Error detecting protocol:`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      this._updateProtocolInfo(-1); // Set to UNKNOWN on error
-      return false;
-    }
-  }
-
-  /**
-   * Updates internal protocol state based on the ELM protocol number.
-   */
-  private _updateProtocolInfo(protocolNum: number): void {
-    this.protocolNumber = protocolNum; // Store the raw number
-
-    // Mapping based on ELM327 protocol numbers
-    if (protocolNum >= 6 && protocolNum <= 20) {
-      this.protocolType = PROTOCOL_TYPES.CAN;
-      this.isCan = true;
-      // Determine header format based on conventions
-      if (protocolNum === PROTOCOL.SAE_J1939_CAN_29BIT_250K) {
-        this.headerFormat = HEADER_FORMATS.CAN_29BIT;
-      } else if (
-        protocolNum >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K &&
-        protocolNum <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8 // Updated upper bound
-      ) {
-        // Standard CAN and Extended variants: 6, 8, 11, 13, 15, 17, 19 are 11-bit; 7, 9, 10, 12, 14, 16, 18, 20 are 29-bit
-        // Simple check often works: even number for 11-bit, odd for 29-bit within known ranges
-        // Be explicit for known exceptions if any exist
-        this.headerFormat =
-          protocolNum % 2 === 0
-            ? HEADER_FORMATS.CAN_11BIT
-            : HEADER_FORMATS.CAN_29BIT;
-      } else {
-        // Fallback pattern for potentially unknown CAN protocols
-        this.headerFormat =
-          protocolNum % 2 === 0
-            ? HEADER_FORMATS.CAN_11BIT
-            : HEADER_FORMATS.CAN_29BIT;
-      }
-    } else if (protocolNum === PROTOCOL.ISO_9141_2) {
-      this.protocolType = PROTOCOL_TYPES.ISO9141;
-      this.headerFormat = HEADER_FORMATS.ISO9141;
-      this.isCan = false;
-    } else if (
-      protocolNum === PROTOCOL.ISO_14230_4_KWP ||
-      protocolNum === PROTOCOL.ISO_14230_4_KWP_FAST
-    ) {
-      this.protocolType = PROTOCOL_TYPES.KWP;
-      this.headerFormat = HEADER_FORMATS.KWP;
-      this.isCan = false;
-    } else if (
-      protocolNum === PROTOCOL.SAE_J1850_PWM ||
-      protocolNum === PROTOCOL.SAE_J1850_VPW
-    ) {
-      this.protocolType = PROTOCOL_TYPES.J1850;
-      this.headerFormat = HEADER_FORMATS.J1850;
-      this.isCan = false;
-    } else {
-      this.protocolType = PROTOCOL_TYPES.UNKNOWN;
-      this.headerFormat = HEADER_FORMATS.UNKNOWN;
-      this.isCan = false;
-      // Ensure protocolNumber reflects unknown status if applicable (e.g., if -1 was passed)
-      if (protocolNum < 0) this.protocolNumber = PROTOCOL.AUTO; // Or represent invalid state appropriately
-    }
-  }
-
-  /**
    * Applies protocol-specific configurations, including default CAN Flow Control using detected header if available.
    */
   private async _configureForProtocol(): Promise<void> {
-    void log.debug(
-      `[${this.constructor.name}] Applying config for protocol: ${this.protocolType}`,
-    );
+    // Only configure if we're already connected
+    if (
+      this.ecuState.status !== ECUConnectionStatus.CONNECTED ||
+      this.ecuState.activeProtocol === null
+    ) {
+      void log.error(
+        `[${this.constructor.name}] ECU not connected or invalid protocol. Cannot configure.`,
+      );
+      this.protocolState = PROTOCOL_STATES.ERROR;
+      return;
+    }
 
     if (this.isCan) {
-      // Enable CAN Auto Formatting
-      try {
-        void log.debug(
-          `[${this.constructor.name}] Enabling CAN Auto Formatting (ATCAF1)`,
-        );
-        await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 2000);
-      } catch (error) {
-        void log.warn(
-          `[${this.constructor.name}] Failed to enable CAN Auto Formatting`,
-          { error: error instanceof Error ? error.message : String(error) },
-        );
-      }
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
+      // Minimal CAN configuration focusing on Flow Control
+      const fcHeader = this.ecuResponseHeader || '7E8';
 
-      // Set default Flow Control settings
-      // Use the detected ECU response header if available, otherwise fallback to typical defaults
-      const fcHeaderToSet =
-        this.ecuResponseHeader ?? // Use detected header first
-        (this.headerFormat === HEADER_FORMATS.CAN_11BIT ? '7E8' : '18DAF110'); // Fallback
+      const flowControlCommands = [
+        { cmd: `ATFCSH${fcHeader}`, desc: 'Set FC Header' },
+        { cmd: 'ATFCSD300008', desc: 'Set FC Data (BS=0,ST=8ms)' },
+        { cmd: 'ATFCSM1', desc: 'Enable FC' },
+      ];
 
-      const flowControlData = '300000'; // BS=0, ST=0ms
-      const flowControlMode = '1'; // Auto FC
-
-      void log.debug(
-        `[${this.constructor.name}] Setting default CAN flow control: Header=${fcHeaderToSet}, Data=${flowControlData}, Mode=${flowControlMode}`,
-      );
-      try {
-        // Set the Flow Control Header (ATFCSH) using the determined header
-        await this.sendCommand(`ATFCSH${fcHeaderToSet}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
-        await this.sendCommand(`ATFCSD${flowControlData}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
-        await this.sendCommand(`ATFCSM${flowControlMode}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
-      } catch (error) {
-        void log.warn(
-          `[${this.constructor.name}] Default CAN flow control setup warning:`,
-          { error: error instanceof Error ? error.message : String(error) },
-        );
-      }
-    } else if (this.protocolType === PROTOCOL_TYPES.KWP) {
-      // KWP-specific: Use ATAT2 for potentially faster KWP
-      try {
-        void log.debug(`[${this.constructor.name}] Setting KWP timing (ATAT2)`);
-        await this.sendCommand(ELM_COMMANDS.ADAPTIVE_TIMING_2, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
-      } catch (error) {
-        void log.warn(
-          `[${this.constructor.name}] KWP timing (ATAT2) warning:`,
-          { error: error instanceof Error ? error.message : String(error) },
-        );
+      for (const { cmd, desc } of flowControlCommands) {
+        try {
+          void log.debug(`[${this.constructor.name}] ${desc}: ${cmd}`);
+          await this.sendCommand(cmd, 2000);
+          await this.delay(DELAYS_MS.COMMAND_SHORT);
+        } catch (error) {
+          void log.warn(
+            `[${this.constructor.name}] Flow Control command failed: ${cmd}`,
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
       }
     }
-    // No specific config needed for ISO9141/J1850 here
+    // No additional configuration needed for other protocols
   }
 
   /**
@@ -463,185 +228,48 @@ export class VINRetriever {
    * Now includes Block Size testing and uses detected ECU header.
    */
   private async _tryOptimizeFlowControl(): Promise<boolean> {
-    if (!this.isCan) {
-      return false;
-    }
+    if (!this.isCan || !this.ecuState.activeProtocol) return false;
 
-    const baseEcuResponseHeader =
-      this.ecuResponseHeader ??
-      (this.headerFormat === HEADER_FORMATS.CAN_11BIT ? '7E8' : '18DAF110');
-
-    void log.debug(
-      `[${this.constructor.name}] Optimizing CAN flow control. Target ECU Response Header: ${baseEcuResponseHeader}`,
-    );
-
-    // Enhanced configurations with more variations
-    const baseConfigs = [
-      // Standard configurations
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300000',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=0, ST=0, Mode=1)`,
-      },
-      // No wait mode
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300000',
-        fcsm: '0',
-        desc: `Std ${baseEcuResponseHeader} (BS=0, ST=0, Mode=0)`,
-      },
-      // Extended wait times
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300008',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=0, ST=8ms, Mode=1)`,
-      },
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300010',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=0, ST=16ms, Mode=1)`,
-      },
-      // Block size variations
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300200',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=2, ST=0, Mode=1)`,
-      },
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300400',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=4, ST=0, Mode=1)`,
-      },
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300800',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=8, ST=0, Mode=1)`,
-      },
-      // Combined BS and ST variations
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300204',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=2, ST=4ms, Mode=1)`,
-      },
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300408',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=4, ST=8ms, Mode=1)`,
-      },
-      {
-        fcsh: baseEcuResponseHeader,
-        fcsd: '300810',
-        fcsm: '1',
-        desc: `Std ${baseEcuResponseHeader} (BS=8, ST=16ms, Mode=1)`,
-      },
+    const configs: Array<{
+      fcsh: string;
+      fcsd: string;
+      fcsm: string;
+    }> = [
+      // Progressive block sizes with increasing separation time
+      { fcsh: '7E8', fcsd: '300000', fcsm: '1' }, // Standard
+      { fcsh: '7E8', fcsd: '300204', fcsm: '1' }, // BS=2, ST=4ms
+      { fcsh: '7E8', fcsd: '300408', fcsm: '1' }, // BS=4, ST=8ms
+      { fcsh: '7E8', fcsd: '300810', fcsm: '1' }, // BS=8, ST=16ms
+      // Try 29-bit headers if needed
+      { fcsh: '18DAF110', fcsd: '300000', fcsm: '1' },
+      { fcsh: '18DAF110', fcsd: '300810', fcsm: '1' },
     ];
 
-    // For 29-bit CAN, try common alternate headers with progressive timing
-    if (this.headerFormat === HEADER_FORMATS.CAN_29BIT) {
-      const alternateHeaders = ['18DAF110', '18DAF120', '18DAF130'].filter(
-        h => h !== baseEcuResponseHeader,
-      );
-      const separationTimes = ['00', '04', '08', '10']; // 0ms, 4ms, 8ms, 16ms
-      const blockSizes = ['00', '02', '04', '08']; // BS=0,2,4,8
-
-      for (const header of alternateHeaders) {
-        for (const st of separationTimes) {
-          for (const bs of blockSizes) {
-            // Only add selective combinations to avoid too many attempts
-            if (
-              (st === '00' && bs === '00') || // Basic
-              (st === '08' && bs === '04') || // Medium
-              (st === '10' && bs === '08') // Aggressive
-            ) {
-              baseConfigs.push({
-                fcsh: header,
-                fcsd: `30${bs}${st}`,
-                fcsm: '1',
-                desc: `Alt ${header} (BS=${parseInt(bs, 16)}, ST=${parseInt(st, 16)}ms, Mode=1)`,
-              });
-            }
-          }
-        }
-      }
-    }
-
-    // Enhanced response validation
-    const validateResponse = (response: string | null): boolean => {
-      if (!response || this.isErrorResponse(response)) return false;
-
-      // Check for common error patterns
-      if (
-        response.includes(RESPONSE_KEYWORDS.BUFFER_FULL) ||
-        response.includes(RESPONSE_KEYWORDS.FB_ERROR) ||
-        response.includes(RESPONSE_KEYWORDS.CAN_ERROR)
-      ) {
-        return false;
-      }
-
-      // VIN response should be substantial and contain valid data patterns
-      const cleanResponse = response.replace(/\s/g, '').toUpperCase();
-
-      // Check for minimum length (typical VIN response is quite long)
-      if (cleanResponse.length < 20) return false;
-
-      // Check for expected Mode 09 response pattern
-      if (!cleanResponse.includes('49')) return false;
-
-      // Verify we have enough data bytes for a VIN
-      const dataBytes = cleanResponse.match(/[0-9A-F]{2}/g) || [];
-      if (dataBytes.length < 20) return false; // VIN needs at least 17 bytes plus overhead
-
-      return true;
-    };
-
-    // Rest of the flow control testing logic
-    for (const config of baseConfigs) {
-      void log.debug(
-        `[${this.constructor.name}] Trying Flow Control: ${config.desc}`,
-      );
+    for (const config of configs) {
       try {
-        // Set flow control parameters
         await this.sendCommand(`ATFCSH${config.fcsh}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        await this.delay(50);
         await this.sendCommand(`ATFCSD${config.fcsd}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        await this.delay(50);
         await this.sendCommand(`ATFCSM${config.fcsm}`, 2000);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        await this.delay(50);
 
-        // Test configuration with VIN request
-        const testResponse = await this._sendCommandWithTiming(
-          this.mode,
-          VINRetriever.DATA_TIMEOUT,
-        );
+        // Test with VIN request
+        const response = await this._sendCommandWithTiming(this.mode, 5000);
 
-        if (validateResponse(testResponse)) {
-          void log.info(
-            `[${this.constructor.name}] Flow control optimization successful with: ${config.desc}`,
-          );
+        if (
+          response &&
+          !this.isErrorResponse(response) &&
+          response.includes('49') &&
+          response.length > 20
+        ) {
           this.ecuResponseHeader = config.fcsh;
           return true;
         }
-
-        void log.debug(
-          `[${this.constructor.name}] Config ${config.desc} failed validation`,
-        );
       } catch (error) {
-        void log.warn(
-          `[${this.constructor.name}] Flow control config failed (${config.desc}):`,
-          { error: error instanceof Error ? error.message : String(error) },
-        );
+        continue;
       }
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
     }
-
     return false;
   }
 
@@ -659,18 +287,15 @@ export class VINRetriever {
         return null;
       }
 
-      // Send the command using timed sender, use DATA_TIMEOUT as VIN can be multi-frame
       const result = await this._sendCommandWithTiming(
         this.mode,
         VINRetriever.DATA_TIMEOUT,
       );
 
-      // Check for initial errors or null response
       if (result === null || this.isErrorResponse(result)) {
         void log.warn(
           `[${this.constructor.name}] Error or no response for command ${this.mode}: ${result ?? 'null'}`,
         );
-        // Update state if critical error detected
         if (
           result !== null &&
           (result.includes('UNABLE') ||
@@ -679,18 +304,16 @@ export class VINRetriever {
         ) {
           this.protocolState = PROTOCOL_STATES.ERROR;
         }
-        return null; // Return null to indicate failure for this attempt
+        return null;
       }
 
-      // --- Flow Control Check (CAN only) ---
-      // Heuristic check for potential flow control issues
+      // Flow Control Check (CAN only)
       const needsFlowControlCheck =
         this.isCan &&
         (result.includes(RESPONSE_KEYWORDS.BUFFER_FULL) ||
           result.includes(RESPONSE_KEYWORDS.FB_ERROR) ||
-          // Check for suspiciously short responses that aren't NO DATA
           (result.length > 0 &&
-            result.length < 20 && // Arbitrary short length
+            result.length < 20 &&
             !result.includes(RESPONSE_KEYWORDS.NO_DATA)));
 
       if (needsFlowControlCheck) {
@@ -700,7 +323,6 @@ export class VINRetriever {
         const flowControlSuccess = await this._tryOptimizeFlowControl();
 
         if (flowControlSuccess) {
-          // Retry the command *once* after successful FC optimization
           void log.debug(
             `[${this.constructor.name}] Retrying command ${this.mode} after flow control optimization...`,
           );
@@ -713,38 +335,33 @@ export class VINRetriever {
             void log.info(
               `[${this.constructor.name}] Successfully received response after flow control optimization.`,
             );
-            // Return the successful retry response for processing
             return retryResult;
           } else {
             void log.warn(
-              `[${this.constructor.name}] Command ${this.mode} still failed or gave error after flow control optimization. Response: ${retryResult ?? 'null'}. Processing original response.`,
+              `[${this.constructor.name}] Command ${this.mode} still failed after optimization. Response: ${retryResult ?? 'null'}`,
             );
-            // Fall through to process the original problematic response (result)
           }
         } else {
           void log.warn(
             `[${this.constructor.name}] Flow control optimization failed. Proceeding with original response.`,
           );
-          // Fall through to process the original problematic response (result)
         }
       }
 
-      // --- Process Original or Successful Retry Response ---
       void log.debug(
         `[${this.constructor.name}] Processing final response for command ${this.mode}: ${result}`,
       );
-      // Return the raw string for assembly and parsing
       return result;
     } catch (error) {
       void log.error(
-        `[${this.constructor.name}] Error during command execution or response processing for ${this.mode}:`,
+        `[${this.constructor.name}] Error during command execution:`,
         {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
         },
       );
-      this.protocolState = PROTOCOL_STATES.ERROR; // Set error state
-      return null; // Return null to indicate failure at this stage
+      this.protocolState = PROTOCOL_STATES.ERROR;
+      return null;
     }
   }
 
@@ -753,40 +370,30 @@ export class VINRetriever {
    * Orchestrates configuration, command sending, retries, and parsing.
    */
   public async retrieveVIN(): Promise<string | null> {
-    // Add connection validation at start
-    if (!this.sendCommand) {
+    // Verify ECU is connected and has valid protocol
+    if (
+      this.ecuState.status !== ECUConnectionStatus.CONNECTED ||
+      this.ecuState.activeProtocol === null
+    ) {
       void log.error(
-        `[${this.constructor.name}] No valid command sender available`,
+        `[${this.constructor.name}] ECU not connected or invalid protocol. Cannot retrieve VIN.`,
       );
       return null;
     }
 
-    // Continue with existing retrieval logic
-    void log.debug(`[${this.constructor.name}] Attempting to retrieve VIN...`);
+    void log.debug(
+      `[${this.constructor.name}] Attempting to retrieve VIN using existing connection...`,
+    );
     let attempt = 0;
-    const maxAttempts = 3; // Allow retries for the whole process
+    const maxAttempts = 3;
 
     while (attempt < maxAttempts) {
       attempt++;
-      void log.debug(
-        `[${this.constructor.name}] VIN Retrieval Attempt ${attempt}/${maxAttempts}`,
-      );
-
       try {
-        // Reset state before each attempt for clean configuration
-        this.resetState();
+        // Configure Flow Control if needed
+        await this._configureForProtocol();
 
-        // Configure adapter specifically for VIN retrieval
-        const configSuccess = await this._configureAdapterForVIN();
-        if (!configSuccess) {
-          void log.error(
-            `[${this.constructor.name}] Adapter configuration failed on attempt ${attempt}.`,
-          );
-          if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
-          continue; // Try next attempt
-        }
-
-        // Send VIN request and handle the response including FC optimization
+        // Send VIN request and handle response
         const rawResponse = await this._sendVINRequestAndProcess();
 
         // If the request process failed (returned null)
@@ -872,12 +479,12 @@ export class VINRetriever {
    */
   public resetState(): void {
     this.isCan = false;
-    this.protocolNumber = PROTOCOL.AUTO; // Reset to default
+    this.protocolNumber = PROTOCOL.AUTO;
     this.protocolType = PROTOCOL_TYPES.UNKNOWN;
     this.headerFormat = HEADER_FORMATS.UNKNOWN;
-    this.ecuResponseHeader = null; // Reset detected header
+    this.ecuResponseHeader = null;
     this.protocolState = PROTOCOL_STATES.INITIALIZED;
-    this.isHeaderEnabled = false; // Must be true for VIN retrieval, set in config
+    this.isHeaderEnabled = false;
     void log.debug(`[${this.constructor.name}] State reset.`);
   }
 

@@ -68,7 +68,7 @@ export interface ECUActionPayload {
   protocolName?: string | null;
   voltage?: number | null;
   detectedEcuAddresses?: string[];
-  error?: string;
+  error?: string; // Single error field
   initCommand?: string;
   initResponse?: string;
   command?: string;
@@ -84,7 +84,6 @@ export interface ECUActionPayload {
       characteristic: string;
     }>;
   };
-  error?: string;
 }
 
 // Update ECUAction type to use the new payload
@@ -346,10 +345,10 @@ export interface ECUState {
   protocolName: string | null;
 
   /** Last recorded error message (null when no error) */
-  lastError: string | null;
+  lastError: string | null; // Rename to lastError to avoid conflict
 
   /** Last read device voltage (e.g., "12.3V") */
-  deviceVoltage: number | null; // Changed from string | null to number | null
+  deviceVoltage: number | null;
 
   /** List of ECU addresses found during connection (e.g., ["7E8", "7E9"]) */
   detectedEcuAddresses: string[];

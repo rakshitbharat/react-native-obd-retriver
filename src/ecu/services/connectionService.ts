@@ -1,5 +1,4 @@
 import { log } from '../../utils/logger';
-import { ecuStore } from '../context/ECUStore';
 import { ProtocolManager } from '../protocols/ProtocolManager';
 import { VINRetriever } from '../retrievers/VINRetriever'; // Import the new VINRetriever
 import {
@@ -373,17 +372,17 @@ export const connectToECU = async (
 
     if (testResponse) {
       const cleaned = cleanResponse(testResponse).toUpperCase();
-      
+
       // Check for valid response patterns
       const isValidResponse =
-        cleaned.includes('41') ||  // Standard response prefix
+        cleaned.includes('41') || // Standard response prefix
         cleaned.includes('SEARCHING...41'); // Auto-detection response
-    
+
       if (isValidResponse) {
         await log.info(
           `[connectionService] Test command successful with response: ${cleaned}`,
         );
-        
+
         // Extract ECU address more reliably
         if (cleaned.match(/^7E[0-9A-F][0-9A-F]/)) {
           // For CAN responses starting with 7Ex
@@ -392,7 +391,7 @@ export const connectToECU = async (
           // Try standard extraction for other formats
           detectedEcus = extractEcuAddresses(cleaned);
         }
-        
+
         await log.debug(
           `[connectionService] Detected ECU addresses: ${detectedEcus.join(', ')}`,
         );
@@ -502,7 +501,7 @@ export const disconnectFromECU = async (
       { error: errorMsg },
     );
   }
-}
+};
 
 // ==========================================================================
 // --- NON-ECU FUNCTIONS (VIN, DTC, CLEAR, RAW DTC) ---

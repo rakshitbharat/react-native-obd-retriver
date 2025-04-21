@@ -135,7 +135,7 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
 
     case ECUActionType.CONNECT_SUCCESS: {
       const ecuAddresses = action.payload?.detectedEcuAddresses ?? [];
-      
+
       return {
         ...state,
         status: ECUConnectionStatus.CONNECTED,
