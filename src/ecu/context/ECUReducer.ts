@@ -112,6 +112,14 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
       const detectedEcus = action.payload?.detectedEcuAddresses ?? [];
       const voltage = action.payload?.voltage ?? null; // Use new voltage or null
 
+      // Log the voltage received in the payload for debugging
+      void log.debug('[ECUReducer] CONNECT_SUCCESS payload details:', {
+        protocol,
+        protocolName,
+        detectedEcus,
+        voltage, // Log the extracted voltage
+      });
+
       return {
         ...state, // Keep existing DTC/rawDTC state if any
         status: ECUConnectionStatus.CONNECTED,

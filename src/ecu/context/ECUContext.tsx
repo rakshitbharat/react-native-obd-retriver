@@ -278,8 +278,15 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       return;
     }
     try {
+      await log.debug('[ECUContext] Attempting to get adapter info...');
       // Call the service function to get adapter info
       const info = await getAdapterInfo(sendCommand);
+
+      // Check if voltage info was successfully retrieved
+      if (info.voltage === null || info.voltage === undefined) {
+        await log.warn('[ECUContext] Voltage information not retrieved from adapter info.');
+      }
+
       // Dispatch action to update state with retrieved info (voltage)
       // Ensure payload properties match ECUActionPayload interface
       const payload: ECUActionPayload = { voltage: info.voltage ?? null }; // Ensure voltage is string | null
