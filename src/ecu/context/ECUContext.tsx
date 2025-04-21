@@ -170,10 +170,15 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   // --- Core ECU Connection Logic ---
   const connectWithECU = useCallback(async (): Promise<boolean> => {
     await log.debug('[ECUContext] Starting ECU connection process');
+    
+    // Create a promise that resolves when state is updated
+    let resolveStateUpdate: (() => void) | undefined;
+    const stateUpdatePromise = new Promise<void>((resolve) => {
+      resolveStateUpdate = resolve;
+    });
+
     // Update state to connecting first
     dispatch({ type: ECUActionType.CONNECT_START });
-    // Add small delay to ensure state is updated
-    await new Promise(resolve => setTimeout(resolve, 0));
 
     // Ensure Bluetooth is connected first
     if (!isBluetoothConnected) {
@@ -183,11 +188,11 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         type: ECUActionType.CONNECT_FAILURE,
         payload: { error: errorMsg },
       });
+      resolveStateUpdate?.(); // Use optional chaining
       return false;
     }
 
     try {
-      // Call the connection service function which handles init, protocol detect, etc.
       const result = await connectToECU(sendCommand);
 
       if (result.success) {
@@ -198,49 +203,62 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           detectedEcuAddresses: result.detectedEcus ?? [],
         };
         
-        // Update state and wait for next tick
+        // Create a promise to track state update completion
+        const updatePromise = new Promise<void>(resolve => {
+          // Use useEffect to detect state update
+          const originalState = state.status;
+          const checkState = () => {
+            if (state.status !== originalState) {
+              resolve();
+            } else {
+              requestAnimationFrame(checkState);
+            }
+          };
+          checkState();
+        });
+
+        // Dispatch success and wait for state update
         dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await updatePromise;
         
-        // Now log after state is updated
+        // Now log after confirmed state update
         await log.info(
           `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'})`
         );
+
+        if (resolveStateUpdate) {
+          resolveStateUpdate();
+        }
         return true;
       } else {
         const errorMsg = result.error ?? 'ECU connection process failed.';
-        // Update state and wait for next tick
         dispatch({
           type: ECUActionType.CONNECT_FAILURE,
           payload: { error: errorMsg },
         });
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
         await log.error(`[ECUContext] ECU Connection failed: ${errorMsg}`);
         return false;
       }
     } catch (error: unknown) {
-      let errorMsg: string;
-      if (error instanceof Error) {
-        errorMsg = `ECU Connection exception: ${error.message}`;
-      } else {
-        errorMsg = `ECU Connection exception: ${String(error)}`;
-      }
+      const errorMsg = error instanceof Error 
+        ? `ECU Connection exception: ${error.message}`
+        : `ECU Connection exception: ${String(error)}`;
       
-      // Update state and wait for next tick
       dispatch({
         type: ECUActionType.CONNECT_FAILURE,
         payload: { error: errorMsg },
       });
-      await new Promise(resolve => setTimeout(resolve, 0));
       
       await log.error('[ECUContext] Connection exception details:', {
         error: errorMsg,
         stack: error instanceof Error ? error.stack : undefined,
       });
       return false;
+    } finally {
+      // Ensure state update promise is resolved
+      resolveStateUpdate?.(); // Use optional chaining
     }
-  }, [sendCommand, isBluetoothConnected]); // Depends on our sendCommand wrapper -> which depends on BT status
+  }, [sendCommand, isBluetoothConnected, state.status]);
 
   // --- Core ECU Disconnect Logic ---
   const disconnectECU = useCallback(async (): Promise<void> => {
@@ -326,13 +344,16 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   // --- These call the unchanged functions in connectionService ---
 
   const getVIN = useCallback(async (): Promise<string | null> => {
-    log.debug(JSON.stringify(state.status));
+    // Wait for any pending state updates first
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    // Now check the status
     if (state.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get VIN: Not connected to ECU.');
       return null;
     }
+
     try {
-      // Call the unmodified service function
       return await getVehicleVIN(sendCommand);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
