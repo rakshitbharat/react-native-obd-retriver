@@ -218,14 +218,13 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   );
 
   // --- Core ECU Connection Logic ---
-  const connectWithECU = useCallback(async (): Promise<boolean> => {
+  const connectWithECU = async (): Promise<boolean> => {
     try {
       await log.debug('[ECUContext] Starting ECU connection process');
       dispatch({ type: ECUActionType.CONNECT_START });
 
       if (!isBluetoothConnected || !sendCommand) {
-        const errorMsg =
-          'Bluetooth device not connected. Please connect via Bluetooth first.';
+        const errorMsg = 'Bluetooth device not connected. Please connect via Bluetooth first.';
         await log.error(`[ECUContext] Connection failed: ${errorMsg}`);
         dispatch({
           type: ECUActionType.CONNECT_FAILURE,
@@ -244,37 +243,32 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           detectedEcuAddresses: result.detectedEcus ?? [],
         };
 
-        // Subscribe to store before dispatching
-        let unsubscribe: () => void;
-        const stateUpdatePromise = new Promise<void>(resolveUpdate => {
-          unsubscribe = ecuStore.subscribe(() => {
-            const currentState = ecuStore.getState();
-            if (currentState.device) {
-              const connectedDevice = currentState.device;
-              dispatch({
-                type: ECUActionType.DEVICE_STATE_CHANGE,
-                payload: {
-                  device: {
-                    ...connectedDevice,
-                    services: connectedDevice.services,
-                    characteristics: connectedDevice.characteristics,
-                  },
-                },
-              });
+        // Dispatch success immediately
+        dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
 
+        // Wait for store update with timeout
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Store update timeout'));
+            }, 5000); // 5 second timeout
+
+            const unsubscribe = ecuStore.subscribe(() => {
+              const currentState = ecuStore.getState();
               if (
                 currentState.status === ECUConnectionStatus.CONNECTED &&
                 (currentState.detectedEcuAddresses?.length ?? 0) > 0
               ) {
-                unsubscribe?.();
-                resolveUpdate();
+                clearTimeout(timeout);
+                unsubscribe();
+                resolve();
               }
-            }
+            });
           });
-        });
-
-        dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
-        await stateUpdatePromise;
+        } catch (timeoutError) {
+          await log.warn('[ECUContext] Store update timed out, but connection was successful');
+          // Continue anyway since the initial connection was successful
+        }
 
         await log.info(
           `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses?.join(', ') ?? 'None'}`,
@@ -306,9 +300,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         stack: error instanceof Error ? error.stack : undefined,
       });
 
-      throw error;
+      return false; // Return false instead of throwing
     }
-  }, [isBluetoothConnected, sendCommand, dispatch]);
+  };
 
   // --- Core ECU Disconnect Logic ---
   const disconnectFromECU = useCallback(async (): Promise<void> => {
