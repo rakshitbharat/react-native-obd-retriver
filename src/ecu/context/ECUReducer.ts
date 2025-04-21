@@ -1,5 +1,5 @@
 import { log } from '../../utils/logger';
-import { ECUConnectionStatus } from '../utils/constants';
+import { ECUConnectionStatus } from '../utils/constants'; // Import PROTOCOL if needed
 import { ECUActionType } from '../utils/types';
 
 import type { ECUAction, ECUState } from '../utils/types';
@@ -35,15 +35,28 @@ import type { ECUAction, ECUState } from '../utils/types';
  *    - dtcLoading: Whether DTCs are currently being retrieved
  *    - dtcClearing: Whether a DTC clear operation is in progress
  *    - rawDTCLoading: Whether raw DTC data is being retrieved
+ *
+ * 6. ECU Detection State:
+ *    - ecuDetectionState: Tracks the multi-step process of detecting ECUs and protocols.
  */
 export const initialState: ECUState = {
   status: ECUConnectionStatus.DISCONNECTED,
   activeProtocol: null,
-  protocolName: null, // Added
+  protocolName: null,
   lastError: null,
   deviceVoltage: null,
-  detectedEcuAddresses: [], // Added
-  selectedEcuAddress: null, // Added
+  detectedEcuAddresses: [],
+  selectedEcuAddress: null,
+  ecuDetectionState: {
+    searchAttempts: 0,
+    maxSearchAttempts: 10, // Example value, should be configurable
+    inProgress: false,
+    lastAttemptTime: 0,
+    protocolsAttempted: [],
+    lastCommand: null, // Initialize last command
+    lastResponse: null, // Initialize last response
+    currentStep: 'IDLE', // Initialize step, e.g., 'IDLE' or 'INIT'
+  },
   // DTC related state remains unchanged
   currentDTCs: null,
   pendingDTCs: null,
@@ -98,52 +111,210 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
   });
 
   switch (action.type) {
-    case ECUActionType.CONNECT_START:
+    case ECUActionType.CONNECT_START: {
       return {
-        ...initialState, // Reset state on new connection attempt
+        ...initialState, // Start fresh, but keep config like maxAttempts?
         status: ECUConnectionStatus.CONNECTING,
-        // Keep previous voltage if available? Or reset fully? Resetting is safer for consistency.
-        // deviceVoltage: state.deviceVoltage, // Let's reset voltage too
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState, // Reset detection state
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep configured max attempts
+          inProgress: true,
+          lastAttemptTime: Date.now(),
+          currentStep: 'INIT', // Mark as starting
+          lastCommand: null, // Reset command/response for new attempt
+          lastResponse: null,
+        },
       };
+    }
+
     case ECUActionType.CONNECT_SUCCESS: {
-      // Extract data from payload provided by ECUContext upon successful connection
-      const protocol = action.payload?.protocol ?? null; // Default to null if undefined
-      const protocolName = action.payload?.protocolName ?? null; // Default to null
+      const protocol = action.payload?.protocol ?? null;
+      const protocolName = action.payload?.protocolName ?? null;
       const detectedEcus = action.payload?.detectedEcuAddresses ?? [];
-      const voltage = action.payload?.voltage ?? null; // Use new voltage or null
+      const voltage = action.payload?.voltage ?? state.deviceVoltage; // Keep existing voltage if not provided
+      const response = action.payload?.response ?? null; // Get the raw response
 
-      // Log the voltage received in the payload for debugging
-      void log.debug('[ECUReducer] CONNECT_SUCCESS payload details:', {
-        protocol,
-        protocolName,
-        detectedEcus,
-        voltage, // Log the extracted voltage
-      });
+      // Check if this success is part of the initial detection phase (e.g., response to '0100')
+      if (state.ecuDetectionState.inProgress && state.ecuDetectionState.lastCommand === '0100') {
+        const newState = {
+          ...state,
+          ecuDetectionState: {
+            ...state.ecuDetectionState,
+            lastResponse: response, // Store the response
+            lastAttemptTime: Date.now(),
+            currentStep: 'CHECK_RESPONSE', // Move to next step
+          },
+        };
 
+        // Check if the response indicates successful communication (example check)
+        if (response && (response.includes('41 00') || response.includes('7E8'))) {
+          // If successful, finalize connection state
+          return {
+            ...newState,
+            status: ECUConnectionStatus.CONNECTED,
+            activeProtocol: protocol, // Use protocol info if available now
+            protocolName: protocolName,
+            selectedEcuAddress: detectedEcus[0] ?? null, // Select first detected ECU
+            detectedEcuAddresses: detectedEcus,
+            lastError: null,
+            deviceVoltage: voltage,
+            ecuDetectionState: {
+              ...newState.ecuDetectionState,
+              inProgress: false, // Detection complete
+              currentStep: 'COMPLETE',
+            },
+          };
+        } else {
+          // If response is not valid for connection, consider it a failed attempt for this protocol/step
+          const attempts = state.ecuDetectionState.searchAttempts + 1;
+          const attemptedProtocols = [...state.ecuDetectionState.protocolsAttempted];
+          // Ensure protocol is a number before pushing
+          if (protocol !== null && !attemptedProtocols.includes(protocol as number)) {
+            attemptedProtocols.push(protocol as number);
+          }
+
+          if (attempts < state.ecuDetectionState.maxSearchAttempts) {
+            // Still have attempts left, stay in CONNECTING state for retry
+            return {
+              ...newState,
+              status: ECUConnectionStatus.CONNECTING, // Stay connecting
+              lastError: `ECU detection attempt ${attempts} failed: Invalid response received.`,
+              ecuDetectionState: {
+                ...newState.ecuDetectionState,
+                searchAttempts: attempts,
+                protocolsAttempted: attemptedProtocols,
+                currentStep: 'RETRY', // Indicate retry needed
+              },
+            };
+          } else {
+            // Max attempts reached after invalid response
+            return {
+              ...initialState,
+              status: ECUConnectionStatus.CONNECTION_FAILED,
+              lastError: `Connection failed after ${attempts} attempts: Invalid response received.`,
+              ecuDetectionState: {
+                ...initialState.ecuDetectionState, // Reset detection state fully
+                maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+              },
+            };
+          }
+        }
+      }
+
+      // General CONNECT_SUCCESS handling (e.g., after protocol negotiation)
+      // Ensure we have essential info for a successful connection
+      if (!protocol || !protocolName || detectedEcus.length === 0) {
+        // If essential info is missing, treat as failure despite CONNECT_SUCCESS action
+        // This might happen if the connection process logic dispatches SUCCESS prematurely
+        const attempts = state.ecuDetectionState.searchAttempts + 1; // Increment attempt count
+        const attemptedProtocols = [...state.ecuDetectionState.protocolsAttempted];
+        if (protocol !== null && !attemptedProtocols.includes(protocol as number)) {
+          attemptedProtocols.push(protocol as number);
+        }
+
+        if (state.ecuDetectionState.inProgress && attempts < state.ecuDetectionState.maxSearchAttempts) {
+          // Still in detection and have attempts left
+          return {
+            ...state,
+            status: ECUConnectionStatus.CONNECTING, // Stay connecting
+            lastError: `ECU detection attempt ${attempts} failed: Missing protocol/ECU info.`,
+            ecuDetectionState: {
+              ...state.ecuDetectionState,
+              searchAttempts: attempts,
+              protocolsAttempted: attemptedProtocols,
+              lastAttemptTime: Date.now(),
+              currentStep: 'RETRY',
+            },
+          };
+        } else {
+          // Final failure (either not in progress or max attempts reached)
+          return {
+            ...initialState,
+            status: ECUConnectionStatus.CONNECTION_FAILED,
+            lastError: 'Connection failed: Missing protocol or ECU information.',
+            ecuDetectionState: {
+              ...initialState.ecuDetectionState,
+              maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
+            },
+          };
+        }
+      }
+
+      // True success case (all necessary info present)
       return {
-        ...state, // Keep existing DTC/rawDTC state if any
+        ...state,
         status: ECUConnectionStatus.CONNECTED,
         activeProtocol: protocol,
         protocolName: protocolName,
-        // Select the first detected ECU as default, or null if none detected
         selectedEcuAddress: detectedEcus[0] ?? null,
         detectedEcuAddresses: detectedEcus,
-        lastError: null, // Clear last error on success
-        deviceVoltage: voltage, // Update voltage
+        lastError: null,
+        deviceVoltage: voltage,
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState, // Reset detection state on final success
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+          lastAttemptTime: Date.now(), // Update time
+          currentStep: 'COMPLETE', // Mark as complete
+        },
       };
     }
-    case ECUActionType.CONNECT_FAILURE:
-      return {
-        ...initialState, // Reset fully on failure
-        status: ECUConnectionStatus.CONNECTION_FAILED,
-        // Keep last error message
-        lastError: action.payload?.error ?? 'Unknown connection error',
-      };
+
+    case ECUActionType.CONNECT_FAILURE: {
+      const errorMsg = action.payload?.error ?? 'Unknown connection error';
+      // Check if we are still in the detection process
+      if (state.ecuDetectionState.inProgress) {
+        const attempts = state.ecuDetectionState.searchAttempts + 1;
+        // Check if we can retry within the max attempts limit
+        if (attempts < state.ecuDetectionState.maxSearchAttempts) {
+          // Update state for retry: increment attempts, keep status CONNECTING
+          return {
+            ...state,
+            status: ECUConnectionStatus.CONNECTING, // Keep trying
+            lastError: `ECU detection attempt ${attempts} failed: ${errorMsg}`,
+            ecuDetectionState: {
+              ...state.ecuDetectionState,
+              searchAttempts: attempts,
+              lastAttemptTime: Date.now(),
+              currentStep: 'RETRY', // Indicate retry needed
+              // Optionally clear last command/response here if needed
+              // lastCommand: null,
+              // lastResponse: null,
+            },
+          };
+        } else {
+          // Max attempts reached, transition to final failure state
+          return {
+            ...initialState, // Reset most state
+            status: ECUConnectionStatus.CONNECTION_FAILED,
+            lastError: `Connection failed after ${attempts} attempts: ${errorMsg}`,
+            ecuDetectionState: {
+              ...initialState.ecuDetectionState, // Reset detection state fully
+              maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+            },
+          };
+        }
+      } else {
+        // If not in detection phase, it's a general connection failure outside the initial process
+        return {
+          ...initialState, // Reset fully on failure
+          status: ECUConnectionStatus.CONNECTION_FAILED,
+          lastError: errorMsg, // Keep last error message
+          ecuDetectionState: {
+            ...initialState.ecuDetectionState, // Reset detection state
+            maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+          },
+        };
+      }
+    }
     case ECUActionType.DISCONNECT:
       // Reset to initial state, perhaps keeping voltage for informational purposes?
       return {
         ...initialState,
         deviceVoltage: state.deviceVoltage, // Option: Keep last known voltage on disconnect
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState, // Reset detection state
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+        },
       };
     case ECUActionType.SET_ECU_INFO:
       // Update specific info like voltage without changing connection status
@@ -154,8 +325,14 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         // Can add other info updates here if needed
       };
     case ECUActionType.RESET:
-      // Full reset to initial state
-      return initialState;
+      // Full reset to initial state, keeping configured max attempts
+      return {
+        ...initialState,
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState,
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
+        },
+      };
 
     // --- DTC related actions remain unchanged (as per requirement) ---
     case ECUActionType.FETCH_DTCS_START:

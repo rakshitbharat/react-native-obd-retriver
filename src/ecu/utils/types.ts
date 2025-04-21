@@ -82,6 +82,8 @@ export interface ECUActionPayload {
   voltage?: string | undefined | null; // Voltage string (e.g., "12.3V") or null/undefined
   /** Raw DTC response data for raw DTC success actions */
   data?: RawDTCResponse | null; // Payload for raw DTC data actions
+  /** Raw response string, e.g., from sendCommand, used in CONNECT_SUCCESS */
+  response?: string | null; // Raw response string
   // Add other potential payload fields if needed
   /** Array of DTC codes for FETCH_DTCS_SUCCESS action */
   dtcs?: string[] | null; // For FETCH_DTCS_SUCCESS potentially
@@ -367,6 +369,26 @@ export interface ECUState {
 
   /** Whether raw DTCs are currently being fetched */
   rawDTCLoading: boolean;
+
+  /** State tracking for the ECU detection process */
+  ecuDetectionState: {
+    /** Number of connection/detection attempts made */
+    searchAttempts: number;
+    /** Maximum allowed attempts before failing */
+    maxSearchAttempts: number;
+    /** Whether the detection process is currently active */
+    inProgress: boolean;
+    /** Timestamp of the last detection attempt */
+    lastAttemptTime: number;
+    /** List of protocol numbers attempted during detection */
+    protocolsAttempted: number[]; // Use number[] for protocol IDs
+    /** The last command sent during detection (e.g., '0100') */
+    lastCommand: string | null;
+    /** The last response received during detection */
+    lastResponse: string | null;
+    /** Current step/stage of the detection process (e.g., 'INIT', 'CHECK_RESPONSE', 'RETRY', 'COMPLETE') */
+    currentStep: string;
+  };
 }
 
 // Type definition for the sendCommand function used throughout the ECU module
