@@ -1,4 +1,4 @@
-import React, { createContext, useMemo, type ReactNode } from 'react';
+import React, { createContext, useMemo, useEffect, useState } from 'react';
 import { useBluetooth } from 'react-native-bluetooth-obd-manager';
 
 import { log } from '../../utils/logger';
@@ -25,10 +25,11 @@ import type {
 } from '../utils/types';
 import { ecuStore, getState, dispatch, waitForStateUpdate } from './ECUStore';
 import { initialState } from './ECUReducer';
+import { useBluetoothConnection } from '../../hooks/useBluetoothConnection';
 
 // Add interface for provider props
 interface ECUProviderProps {
-  children: ReactNode;
+  children: React.ReactNode;
 }
 
 // Create context with proper initial value
@@ -47,61 +48,36 @@ export const ECUContext = createContext<ECUContextValue>({
 });
 
 export const ECUProvider: React.FC<ECUProviderProps> = ({ children }) => {
-  const { sendCommand: bluetoothSendCommand, connectedDevice } = useBluetooth();
-  const isBluetoothConnected = !!connectedDevice;
+  const { sendCommand: bluetoothSendCommand } = useBluetooth();
+  const { isReady: isBluetoothReady, error: bluetoothError } = useBluetoothConnection();
 
   const sendCommand: SendCommandFunction = async (
     command: string,
     timeout?: number | { timeout?: number },
   ): Promise<string | null> => {
-    if (!isBluetoothConnected || !bluetoothSendCommand) {
-      await log.warn(
-        '[ECUContext] Attempted to send command while Bluetooth disconnected or command function unavailable:',
-        { command },
-      );
+    if (!isBluetoothReady || !bluetoothSendCommand) {
+      await log.warn('[ECUContext] Command failed - Bluetooth not ready:', { 
+        command,
+        error: bluetoothError 
+      });
       return null;
     }
+
     try {
-      await log.debug(
-        `[ECUContext] Sending command via BT hook: ${command}`,
-        { timeout },
-      );
-      const response = await bluetoothSendCommand(
-        command,
-        typeof timeout === 'number' ? { timeout } : timeout,
-      );
-      await log.debug(
-        `[ECUContext] Received response for "${command}": ${response ?? 'null'}`,
-      );
+      const response = await bluetoothSendCommand(command, typeof timeout === 'number' ? { timeout } : timeout);
+      await log.debug(`[ECUContext] Command ${command} response:`, { response });
       return response;
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      await log.error(
-        `[ECUContext] Error sending command "${command}" via BT hook:`,
-        {
-          error: errorMessage,
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-      );
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await log.error('[ECUContext] Send command error:', { command, error: errorMsg });
       return null;
     }
   };
 
   const connectWithECU = async (): Promise<boolean> => {
     try {
+  
       dispatch({ type: ECUActionType.CONNECT_START });
-      await log.info('[ECUContext] connectWithECU called');
-
-      if (!isBluetoothConnected) {
-        const errorMsg = 'Bluetooth device not connected. Please connect via Bluetooth first.';
-        await log.error(`[ECUContext] Connection failed: ${errorMsg}`);
-        dispatch({
-          type: ECUActionType.CONNECT_FAILURE,
-          payload: { error: errorMsg },
-        });
-        return false;
-      }
 
       const result = await connectToECU(sendCommand);
 
