@@ -159,6 +159,50 @@ export class VINRetriever {
       setTimeout(resolve, ms);
     });
   }
+ /**
+   * Configure adapter specifically for VIN retrieval.
+   * Includes reset, basic settings, protocol detection, ECU header detection, and specific config.
+   */
+  private async _configureAdapterForVIN(): Promise<boolean> {
+    void log.info('[VINRetriever] Configuring adapter for VIN retrieval...');
+    
+    if (this.protocolState === PROTOCOL_STATES.READY) {
+      void log.debug('[VINRetriever] Adapter already configured');
+      return true;
+    }
+    
+    this.protocolState = PROTOCOL_STATES.CONFIGURING;
+
+    try {
+      // Basic configuration commands
+      const commands = [
+        { cmd: 'ATE0', delay: 100, desc: 'Echo off' },
+        { cmd: 'ATL0', delay: 100, desc: 'Linefeeds off' },
+        { cmd: 'ATS0', delay: 100, desc: 'Spaces off' },
+        { cmd: 'ATH1', delay: 100, desc: 'Headers on' },
+        { cmd: 'ATAT1', delay: 100, desc: 'Adaptive timing on' }
+      ];
+
+      for (const {cmd, delay, desc} of commands) {
+        const response = await this.sendCommand(cmd);
+        if (!response || isResponseError(response)) {
+          void log.warn(`[VINRetriever] Failed to ${desc}: ${response}`);
+          if (cmd === 'ATH1') {
+            throw new Error('Headers must be enabled for VIN retrieval');
+          }
+        }
+        await this.delay(delay);
+      }
+
+      void log.info('[VINRetriever] Adapter configuration complete');
+      return true;
+
+    } catch (error) {
+      void log.error('[VINRetriever] Configuration failed:', error);
+      this.protocolState = PROTOCOL_STATES.ERROR;
+      return false;
+    }
+  }
 
   /**
    * Applies protocol-specific configurations, including default CAN Flow Control using detected header if available.
@@ -450,6 +494,8 @@ export class VINRetriever {
    * Orchestrates configuration, command sending, retries, and parsing.
    */
   public async retrieveVIN(): Promise<string | null> {
+    await this._configureAdapterForVIN();
+    // Check if the adapter is configured successfully
     // Verify ECU is connected and has valid protocol
     if (
       this.ecuState.status !== ECUConnectionStatus.CONNECTED ||
@@ -476,10 +522,7 @@ export class VINRetriever {
         // Send VIN request and handle response
         const rawResponse = await this._sendVINRequestAndProcess();
 
-        let rr = await this.bluetoothSendCommandRawChunked('0902');
-
-        console.log('rawResponse', JSON.stringify(rr));
-
+      
         // If the request process failed (returned null)
         if (rawResponse === null) {
           void log.warn(
