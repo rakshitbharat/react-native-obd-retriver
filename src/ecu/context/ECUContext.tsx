@@ -189,11 +189,10 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       const result = await connectToECU(sendCommand); // Pass the wrapped sendCommand
 
       if (result.success) {
-        // Create payload for successful connection
         const payload: ECUActionPayload = {
           protocol: result.protocol ?? null,
           protocolName: result.protocolName ?? null,
-          voltage: result.voltage ?? null,
+          voltage: parseVoltage(result.voltage),
           detectedEcuAddresses: result.detectedEcus ?? [],
         };
         dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
@@ -289,7 +288,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
       // Dispatch action to update state with retrieved info (voltage)
       // Ensure payload properties match ECUActionPayload interface
-      const payload: ECUActionPayload = { voltage: info.voltage ?? null }; // Ensure voltage is string | null
+      const payload: ECUActionPayload = { 
+        voltage: parseVoltage(info.voltage)
+      }; // Ensure voltage is string | null
       dispatch({ type: ECUActionType.SET_ECU_INFO, payload });
       await log.debug('[ECUContext] ECU information updated.', {
         voltage: info.voltage,
@@ -493,4 +494,12 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   return (
     <ECUContext.Provider value={contextValue}>{children}</ECUContext.Provider>
   );
+};
+
+// Move parseVoltage outside and before ECUProvider component
+const parseVoltage = (voltageStr: string | null | undefined): number | null => {
+  if (!voltageStr) return null;
+  // Remove 'V' suffix and convert to number
+  const numericValue = parseFloat(voltageStr.replace('V', ''));
+  return isNaN(numericValue) ? null : numericValue;
 };

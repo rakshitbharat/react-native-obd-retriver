@@ -142,22 +142,21 @@ export const initializeAdapter = async (
   sendCommand: SendCommandFunction,
 ): Promise<boolean> => {
   await log.debug('[connectionService] Initializing adapter...');
-  // Basic sequence: Reset -> Echo Off -> Linefeeds Off -> Spaces Off
-  // Headers and Timing are usually set *after* protocol detection.
+  
   const initCommands = [
-    // Reset device fully
     {
       cmd: ELM_COMMANDS.RESET,
       delay: DELAYS_MS.RESET,
       ignoreError: true,
       checkOk: false,
+      timeout: 3000, // Longer timeout for reset
     },
-    // Basic ELM settings for clean communication
     {
       cmd: ELM_COMMANDS.ECHO_OFF,
       delay: DELAYS_MS.INIT,
       ignoreError: false,
       checkOk: true,
+      timeout: 2000,
     },
     {
       cmd: ELM_COMMANDS.LINEFEEDS_OFF,
@@ -190,46 +189,49 @@ export const initializeAdapter = async (
     // { cmd: `${ELM_COMMANDS.SET_TIMEOUT}${defaultTimeoutHex}`, delay: DELAYS_MS.INIT, ignoreError: false, checkOk: true },
   ];
 
+  /**
+   * Helper function to check if response contains OK or variants
+   */
+  const isValidResponse = (response: string | null): boolean => {
+    if (!response) return false;
+    
+    // Clean response by removing prompts, carriage returns, etc
+    const cleaned = response.replace(/[\r\n>]/g, '').trim().toUpperCase();
+    
+    // Check for common valid responses (case insensitive)
+    return [
+      'OK',
+      'ELM327',
+      'ATZ',
+      'ATE0OK',
+      'ATL0OK',
+      'ATS0OK',
+      'ATH0OK',
+      'ATAT0OK'
+    ].some(validResponse => cleaned.includes(validResponse));
+  };
+
   try {
-    for (const { cmd, delay: cmdDelay, ignoreError, checkOk } of initCommands) {
+    for (const { cmd, delay: cmdDelay, ignoreError, checkOk, timeout } of initCommands) {
       await log.debug(`[connectionService] Sending init command: ${cmd}`);
-      const response = await sendCommand(cmd, 2000);
-      await delay(cmdDelay); // Wait after command
+      const response = await sendCommand(cmd, timeout);
+      await delay(cmdDelay);
 
       if (!ignoreError) {
-        // First, check for outright null response or explicit error keywords
         if (response === null || isResponseError(response)) {
           await log.error(
-            `[connectionService] Init command "${cmd}" failed (null response or error keyword). Response: ${response ?? 'null'}`,
+            `[connectionService] Init command "${cmd}" failed. Response: ${response ?? 'null'}`,
           );
           return false;
         }
 
-        // If checkOk is required, verify the response contains OK or is the special ATE0OK case
-        if (checkOk) {
-          const standardOk = isResponseOk(response); // Checks if 'OK' is present
-          // Specifically allow the 'ATE0OK' response for the ATE0 command
-          const isAte0Command = cmd === ELM_COMMANDS.ECHO_OFF;
-          const isAte0OkResponse = isAte0Command && response?.includes(cmd + RESPONSE_KEYWORDS.OK); // e.g., includes "ATE0OK"
-
-          // If standard OK check fails AND it's not the specific ATE0OK response AND it's not '?', then fail
-          if (!standardOk && !isAte0OkResponse && response?.trim() !== '?') {
-            await log.error(
-              `[connectionService] Init command "${cmd}" failed or returned unexpected response (expected 'OK' or variant). Response: ${response ?? 'null'}`,
-            );
-            return false;
-          }
-        }
-
-        // Handle '?' response (might be unsupported command, but allow continuation)
-        if (response?.trim() === '?') {
-          await log.warn(
-            `[connectionService] Init command "${cmd}" returned '?', possibly unsupported but continuing.`,
+        if (checkOk && !isValidResponse(response)) {
+          await log.error(
+            `[connectionService] Init command "${cmd}" failed validation. Response: ${response}`,
           );
+          return false;
         }
-        // If we reach here, the response is considered acceptable for this command
       } else {
-        // Log ignored responses for debugging if needed
         await log.debug(
           `[connectionService] Init command "${cmd}" response (errors ignored): ${response ?? 'null'}`,
         );

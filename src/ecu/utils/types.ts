@@ -64,29 +64,31 @@ export type ECUAction = {
 };
 
 /**
- * Interface for the payload of ECU actions
- *
- * This interface defines all possible properties that can be included in
- * an action payload. Not all properties are relevant for all action types.
+ * Configuration for header format in protocols
+ */
+export interface HeaderFormatConfig {
+  type: '11bit' | '29bit';
+  format: 'CAN' | 'ISO' | 'KWP';
+  addressingMode: 'functional' | 'physical';
+  defaultTxHeader: string;
+  defaultRxHeader: string;
+}
+
+/**
+ * Payload type for ECU actions
  */
 export interface ECUActionPayload {
-  /** Protocol number (enum value or null) for CONNECT_SUCCESS action */
-  protocol?: PROTOCOL | null; // Protocol number (enum or null)
-  /** Human-readable protocol name for CONNECT_SUCCESS action */
-  protocolName?: string | null; // Descriptive name of the protocol
-  /** Array of detected ECU addresses (e.g., ["7E8", "7E9"]) for CONNECT_SUCCESS */
-  detectedEcuAddresses?: string[]; // Array of detected ECU addresses (headers)
-  /** Error message for failure actions */
-  error?: string; // Error message string
-  /** Battery voltage (e.g., "12.5V") for SET_ECU_INFO action */
-  voltage?: string | undefined | null; // Voltage string (e.g., "12.3V") or null/undefined
-  /** Raw DTC response data for raw DTC success actions */
-  data?: RawDTCResponse | null; // Payload for raw DTC data actions
-  /** Raw response string, e.g., from sendCommand, used in CONNECT_SUCCESS */
-  response?: string | null; // Raw response string
-  // Add other potential payload fields if needed
-  /** Array of DTC codes for FETCH_DTCS_SUCCESS action */
-  dtcs?: string[] | null; // For FETCH_DTCS_SUCCESS potentially
+  protocol?: number | null;
+  protocolName?: string | null;
+  detectedEcuAddresses?: string[];
+  voltage?: number | null;
+  response?: string | null;
+  command?: string | null;  // Add this line
+  error?: string;
+  data?: any;
+  dtcs?: any[];
+  initCommand?: string;
+  initResponse?: string | null;
 }
 
 /**
@@ -334,7 +336,7 @@ export interface ECUState {
   lastError: string | null;
 
   /** Last read device voltage (e.g., "12.3V") */
-  deviceVoltage: string | null;
+  deviceVoltage: number | null;  // Changed from string | null to number | null
 
   /** List of ECU addresses found during connection (e.g., ["7E8", "7E9"]) */
   detectedEcuAddresses: string[];
@@ -388,7 +390,20 @@ export interface ECUState {
     lastResponse: string | null;
     /** Current step/stage of the detection process (e.g., 'INIT', 'CHECK_RESPONSE', 'RETRY', 'COMPLETE') */
     currentStep: string;
+    /** Number of attempts for the 0100 command specifically */
+    command0100Attempts: number;
+    /** Maximum number of attempts for the 0100 command */
+    maxCommand0100Attempts: number;
   };
+  /** Initialization state tracking for ECU */
+  initializationState: ECUInitializationState;
+}
+
+export interface ECUInitializationState {
+  initAttempts: number;
+  maxInitAttempts: number;
+  lastInitCommand: string | null;
+  lastInitResponse: string | null;
 }
 
 // Type definition for the sendCommand function used throughout the ECU module
@@ -865,84 +880,6 @@ export interface FlowControlConfig {
    * Informational only - not directly configurable on most adapters
    */
   maxWaitFrames?: number;
-}
-
-/**
- * Configuration for OBD communication header format
- *
- * This interface defines the header structure and addressing used
- * for communication with the vehicle's ECUs.
- *
- * @example
- * ```typescript
- * // Standard CAN 11-bit configuration
- * const can11bitConfig: HeaderFormatConfig = {
- *   type: '11bit',
- *   format: 'CAN',
- *   addressingMode: 'functional',
- *   defaultTxHeader: '7DF',     // Standard functional addressing
- *   defaultRxHeader: '7E8',     // Primary ECU response
- *   defaultFilter: '7E8',       // Only show responses from primary ECU
- *   defaultMask: 'FFF'          // Match exact header
- * };
- *
- * // Extended CAN 29-bit configuration
- * const can29bitConfig: HeaderFormatConfig = {
- *   type: '29bit',
- *   format: 'CAN',
- *   addressingMode: 'physical',
- *   defaultTxHeader: '18DB33F1', // ISO-TP physical addressing
- *   defaultRxHeader: '18DAF110', // ECM response header
- *   defaultFilter: '18DAF110'    // Only accept primary ECU
- * };
- * ```
- */
-export interface HeaderFormatConfig {
-  /**
-   * CAN ID type:
-   * - '11bit': Standard CAN identifier (11 bits)
-   * - '29bit': Extended CAN identifier (29 bits)
-   */
-  type?: '11bit' | '29bit';
-
-  /**
-   * Protocol format (informational)
-   * Indicates the protocol family
-   */
-  format?: 'CAN' | 'ISO' | 'KWP' | 'J1850' | 'OTHER';
-
-  /**
-   * Addressing mode (informational):
-   * - 'functional': Broadcast to all ECUs (e.g., 7DF for CAN)
-   * - 'physical': Target a specific ECU (e.g., 7E0 for engine ECU in CAN)
-   */
-  addressingMode?: 'physical' | 'functional';
-
-  /**
-   * Default header for outgoing messages
-   * For CAN 11-bit: typically '7DF' (functional) or '7E0' (physical)
-   * For CAN 29-bit: typically '18DB33F1' (functional) or '18DA10F1' (physical)
-   */
-  defaultTxHeader?: string;
-
-  /**
-   * Default header for incoming messages (response)
-   * For CAN 11-bit: typically '7E8' for primary ECU
-   * For CAN 29-bit: typically '18DAF110' for primary ECU
-   */
-  defaultRxHeader?: string;
-
-  /**
-   * Default CAN message filter
-   * Used with ATCF command to filter incoming messages
-   */
-  defaultFilter?: string;
-
-  /**
-   * Default CAN message mask
-   * Used with ATCM command to specify which bits in the filter are relevant
-   */
-  defaultMask?: string;
 }
 
 /**
