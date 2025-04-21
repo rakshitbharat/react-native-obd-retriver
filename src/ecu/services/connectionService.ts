@@ -1,4 +1,5 @@
 import { log } from '../../utils/logger';
+import { ecuStore } from '../context/ECUStore';
 import { ProtocolManager } from '../protocols/ProtocolManager';
 import { VINRetriever } from '../retrievers/VINRetriever'; // Import the new VINRetriever
 import {
@@ -401,9 +402,12 @@ export const connectToECU = async (
     );
   }
 
+  const s = ecuStore.getState();
+
   await log.info(
     `[connectionService] Connection established. Protocol: ${protocolName} (${protocol}), Voltage: ${adapterInfo.voltage}`,
   );
+  console.log(JSON.stringify(s, null, 2));
 
   // Connection successful
   return {

@@ -497,6 +497,26 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
       // Sync entire state from context
       return action.payload as ECUState;
 
+    case ECUActionType.BLUETOOTH_STATE_CHANGE:
+      if (action.payload?.bluetoothState === 'off') {
+        return {
+          ...initialState,
+          status: ECUConnectionStatus.DISCONNECTED,
+          lastError: 'Bluetooth turned off'
+        };
+      }
+      return state;
+
+    case ECUActionType.DEVICE_STATE_CHANGE:
+      if (!action.payload?.device?.connected) {
+        return {
+          ...initialState,
+          status: ECUConnectionStatus.DISCONNECTED,
+          lastError: 'Device disconnected'
+        };
+      }
+      return state;
+
     default:
       return state;
   }

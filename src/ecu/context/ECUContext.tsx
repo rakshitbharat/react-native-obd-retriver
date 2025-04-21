@@ -4,6 +4,7 @@ import React, {
   useMemo,
   type ReactNode,
   type FC,
+  useEffect,
 } from 'react';
 import { useBluetooth } from 'react-native-bluetooth-obd-manager';
 
@@ -31,7 +32,6 @@ import type {
   ECUActionPayload,
 } from '../utils/types';
 import { ecuStore } from './ECUStore';
-import { useECUStoreSync } from '../hooks/useECUStoreSync';
 
 /**
  * React Context for ECU communication
@@ -102,10 +102,60 @@ interface ECUProviderProps {
  */
 export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   const [state, dispatch] = ecuStore.useSyncReducer();
-  const { sendCommand: bluetoothSendCommand, connectedDevice } = useBluetooth();
+  const { sendCommand: bluetoothSendCommand, connectedDevice, error } = useBluetooth();
 
-  // Sync context state with store
-  useECUStoreSync(state);
+  // Replace useECUStoreSync with direct subscription
+  useEffect(() => {
+    const unsubscribe = ecuStore.subscribe(() => {
+      const storeState = ecuStore.getState();
+      if (storeState !== state) {
+        ecuStore.dispatch({ 
+          type: ECUActionType.SYNC_STATE, 
+          payload: state 
+        });
+      }
+    });
+
+    return () => unsubscribe();
+  }, [state]);
+
+  // Track Bluetooth device changes
+  useEffect(() => {
+    if (connectedDevice) {
+      dispatch({
+        type: ECUActionType.DEVICE_STATE_CHANGE,
+        payload: {
+          device: {
+            connected: true,
+            services: connectedDevice.services?.map(s => s.uuid),
+            characteristics: connectedDevice.characteristics?.map(c => ({
+              service: c.service,
+              characteristic: c.characteristic
+            }))
+          }
+        }
+      });
+    } else {
+      dispatch({
+        type: ECUActionType.DEVICE_STATE_CHANGE,
+        payload: {
+          device: {
+            connected: false
+          }
+        }
+      });
+    }
+  }, [connectedDevice, dispatch]);
+
+  // Handle Bluetooth errors
+  useEffect(() => {
+    if (error) {
+      dispatch({
+        type: ECUActionType.CONNECT_FAILURE,
+        payload: { error: error.message }
+      });
+    }
+  }, [error, dispatch]);
 
   // Determine connection status based on connectedDevice (Bluetooth level)
   const isBluetoothConnected = !!connectedDevice;

@@ -20,6 +20,7 @@ export const ECUActionType = {
   DISCONNECT: 'DISCONNECT',
   /** Indicates disconnection was successful */
   DISCONNECT_SUCCESS: 'DISCONNECT_SUCCESS',
+  DEVICE_STATE_CHANGE: 'DEVICE_STATE_CHANGE',
   /** Updates ECU information like voltage */
   SET_ECU_INFO: 'SET_ECU_INFO', // Used for updating info like voltage
   /** Completely resets the ECU state */
@@ -51,6 +52,7 @@ export const ECUActionType = {
   /** Indicates raw DTC retrieval failed, with error info */
   FETCH_RAW_DTCS_FAILURE: 'FETCH_RAW_DTCS_FAILURE',
   SYNC_STATE: 'SYNC_STATE' as const,
+  BLUETOOTH_STATE_CHANGE: 'BLUETOOTH_STATE_CHANGE',
 } as const;
 
 export type ECUActionTypes = (typeof ECUActionType)[keyof typeof ECUActionType];
@@ -73,6 +75,16 @@ export interface ECUActionPayload {
   response?: string;
   data?: RawDTCResponse | null;
   dtcs?: string[];
+  bluetoothState?: 'on' | 'off';
+  device?: {
+    connected: boolean;
+    services?: string[];
+    characteristics?: Array<{
+      service: string;
+      characteristic: string;
+    }>;
+  };
+  error?: string;
 }
 
 // Update ECUAction type to use the new payload
