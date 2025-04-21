@@ -193,27 +193,43 @@ export const initializeAdapter = async (
   try {
     for (const { cmd, delay: cmdDelay, ignoreError, checkOk } of initCommands) {
       await log.debug(`[connectionService] Sending init command: ${cmd}`);
-      // Use moderate timeout for init commands
       const response = await sendCommand(cmd, 2000);
       await delay(cmdDelay); // Wait after command
 
       if (!ignoreError) {
-        // Allow '?' response for some commands if ELM doesn't support them fully but continues
-        if (
-          response === null ||
-          isResponseError(response) ||
-          (checkOk && !isResponseOk(response) && response?.trim() !== '?')
-        ) {
+        // First, check for outright null response or explicit error keywords
+        if (response === null || isResponseError(response)) {
           await log.error(
-            `[connectionService] Init command "${cmd}" failed or returned error/unexpected response. Response: ${response ?? 'null'}`,
+            `[connectionService] Init command "${cmd}" failed (null response or error keyword). Response: ${response ?? 'null'}`,
           );
-          return false; // Fail initialization if any essential command fails
-        } else if (response?.trim() === '?') {
+          return false;
+        }
+
+        // If checkOk is required, verify the response contains OK or is the special ATE0OK case
+        if (checkOk) {
+          const standardOk = isResponseOk(response); // Checks if 'OK' is present
+          // Specifically allow the 'ATE0OK' response for the ATE0 command
+          const isAte0Command = cmd === ELM_COMMANDS.ECHO_OFF;
+          const isAte0OkResponse = isAte0Command && response?.includes(cmd + RESPONSE_KEYWORDS.OK); // e.g., includes "ATE0OK"
+
+          // If standard OK check fails AND it's not the specific ATE0OK response AND it's not '?', then fail
+          if (!standardOk && !isAte0OkResponse && response?.trim() !== '?') {
+            await log.error(
+              `[connectionService] Init command "${cmd}" failed or returned unexpected response (expected 'OK' or variant). Response: ${response ?? 'null'}`,
+            );
+            return false;
+          }
+        }
+
+        // Handle '?' response (might be unsupported command, but allow continuation)
+        if (response?.trim() === '?') {
           await log.warn(
             `[connectionService] Init command "${cmd}" returned '?', possibly unsupported but continuing.`,
           );
         }
+        // If we reach here, the response is considered acceptable for this command
       } else {
+        // Log ignored responses for debugging if needed
         await log.debug(
           `[connectionService] Init command "${cmd}" response (errors ignored): ${response ?? 'null'}`,
         );
