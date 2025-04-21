@@ -7,11 +7,7 @@ import {
   PROTOCOL,
   ECUConnectionStatus,
 } from '../utils/constants';
-import {
-  isResponseError,
-  parseVinFromResponse,
-  assembleMultiFrameResponse,
-} from '../utils/helpers';
+import { isResponseError } from '../utils/helpers';
 
 import type { ECUState } from '../utils/types';
 import type { ServiceMode } from './types';
@@ -329,285 +325,129 @@ export class VINRetriever {
     return false;
   }
 
-  private parseCanVinResponse(rawResponse: string): string | null {
-    try {
-      void log.debug(`[${this.constructor.name}] Raw CAN response: ${rawResponse}`);
+  private processCanFrames(response: string): string {
+    void log.debug('[VINRetriever] Processing CAN frames from:', response);
+    
+    // Remove any terminators and clean the response
+    const cleanResponse = response.replace(/[\r\n>]/g, '').toUpperCase();
+    
+    // Split into individual frames and validate
+    const frames = cleanResponse.match(/7E8[0-9A-F]+/g) || [];
+    void log.debug('[VINRetriever] Found frames:', frames);
+    
+    if (frames.length === 0) {
+      void log.warn('[VINRetriever] No valid CAN frames found');
+      return '';
+    }
+
+    // Process and combine frame data
+    const combinedData = frames
+      .map(frame => frame.substring(4)) // Remove 7E8 header
+      .join('');
       
-      // Initial cleanup - remove prompt and whitespace
-      const response = rawResponse.replace(/[>\r\n\s]/g, '').toUpperCase();
-      void log.debug(`[${this.constructor.name}] Cleaned response: ${response}`);
+    void log.debug('[VINRetriever] Combined frame data:', combinedData);
+    return combinedData;
+  }
 
-      // Parse CAN frames - match frames with format 7ExYY... where x is frame number
-      const frames = response.match(/7E[0-9][0-9A-F]+/g) || [];
-      void log.debug(`[${this.constructor.name}] Parsed frames:`, frames);
-
-      if (frames.length === 0) {
-        void log.warn(`[${this.constructor.name}] No valid CAN frames found`);
+  private extractVinFromHex(hexData: string): string | null {
+    try {
+      void log.debug('[VINRetriever] Extracting VIN from hex:', hexData);
+      
+      // The response format should be: 49 02 01 [VIN DATA]
+      // Remove the service and PID bytes (4902) and first byte (01)
+      const vinStart = hexData.indexOf('490201');
+      if (vinStart === -1) {
+        void log.warn('[VINRetriever] No VIN marker (490201) found');
         return null;
       }
-
-      // Extract and order the data from frames
-      let vinHexString = '';
-      for (const frame of frames) {
-        // Skip first 4 chars (7Ex8) for first frame, 4 chars (7Ex8) for consecutive
-        const dataStart = frame.startsWith('7E8') ? 8 : 4;
-        const data = frame.substring(dataStart);
-        vinHexString += data;
-      }
-
-      void log.debug(`[${this.constructor.name}] Combined hex data: ${vinHexString}`);
-
-      // Find start of VIN data after service 09 PID 02 (4902)
-      const serviceMatch = vinHexString.match(/4902[0-9A-F]+/);
-      if (!serviceMatch) {
-        void log.warn(`[${this.constructor.name}] No service 09 PID 02 marker found`);
-        return null;
-      }
-
-      // Extract the actual VIN data after 4902
-      const vinHexData = serviceMatch[0].substring(4);
-      void log.debug(`[${this.constructor.name}] VIN hex data: ${vinHexData}`);
-
+      
+      // Get the VIN portion after 490201
+      const vinHex = hexData.substring(vinStart + 6);
+      void log.debug('[VINRetriever] VIN hex data:', vinHex);
+      
       // Convert hex to ASCII characters
       let vin = '';
-      for (let i = 0; i < vinHexData.length && vin.length < 17; i += 2) {
-        const hexPair = vinHexData.substring(i, i + 2);
-        const charCode = parseInt(hexPair, 16);
-        
-        // Only include valid VIN characters
-        const char = String.fromCharCode(charCode);
-        if (/[A-HJ-NPR-Z0-9]/i.test(char)) {
-          vin += char;
-        } else {
-          void log.warn(
-            `[${this.constructor.name}] Invalid VIN character: ${char} (hex: ${hexPair})`
-          );
+      for (let i = 0; i < vinHex.length && vin.length < 17; i += 2) {
+        const hex = vinHex.substring(i, i + 2);
+        const ascii = String.fromCharCode(parseInt(hex, 16));
+        if (/[A-HJ-NPR-Z0-9]/i.test(ascii)) {
+          vin += ascii;
         }
       }
-
-      void log.debug(`[${this.constructor.name}] Extracted VIN: ${vin}`);
-
-      // Validate final VIN
+      
+      void log.debug('[VINRetriever] Extracted VIN:', vin);
+      
+      // Validate VIN format
       if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
-        void log.info(`[${this.constructor.name}] Valid VIN found: ${vin}`);
+        void log.info('[VINRetriever] Valid VIN found:', vin);
         return vin;
       }
-
-      void log.warn(
-        `[${this.constructor.name}] Invalid VIN format: ${vin} (length: ${vin.length})`
-      );
+      
+      void log.warn('[VINRetriever] Invalid VIN format:', vin);
       return null;
 
     } catch (error) {
-      void log.error(`[${this.constructor.name}] Error parsing CAN VIN response:`, {
-        error: error instanceof Error ? error.message : String(error),
-        raw: rawResponse
-      });
+      void log.error('[VINRetriever] Error extracting VIN:', error);
       return null;
     }
   }
 
-  private async _sendVINRequestAndProcess(): Promise<string | null> {
-    try {
-      if (this.protocolState !== PROTOCOL_STATES.READY) {
-        void log.warn(
-          `[${this.constructor.name}] Protocol not ready (State: ${this.protocolState}). Aborting command ${this.mode}.`,
-        );
-        this.protocolState = PROTOCOL_STATES.ERROR;
-        return null;
-      }
-
-      const result = await this._sendCommandWithTiming(
-        this.mode,
-        VINRetriever.DATA_TIMEOUT,
-      );
-
-      if (result === null || this.isErrorResponse(result)) {
-        void log.warn(
-          `[${this.constructor.name}] Error or no response for command ${this.mode}: ${result ?? 'null'}`,
-        );
-        if (
-          result !== null &&
-          (result.includes('UNABLE') ||
-            result.includes('BUS ERROR') ||
-            result.includes('TIMEOUT'))
-        ) {
-          this.protocolState = PROTOCOL_STATES.ERROR;
-        }
-        return null;
-      }
-
-      // Flow Control Check (CAN only)
-      const needsFlowControlCheck =
-        this.isCan &&
-        (result.includes(RESPONSE_KEYWORDS.BUFFER_FULL) ||
-          result.includes(RESPONSE_KEYWORDS.FB_ERROR) ||
-          (result.length > 0 &&
-            result.length < 20 &&
-            !result.includes(RESPONSE_KEYWORDS.NO_DATA)));
-
-      if (needsFlowControlCheck) {
-        void log.debug(
-          `[${this.constructor.name}] Detected potential CAN flow control issue. Response: ${result}. Attempting optimization...`,
-        );
-        const flowControlSuccess = await this._tryOptimizeFlowControl();
-
-        if (flowControlSuccess) {
-          void log.debug(
-            `[${this.constructor.name}] Retrying command ${this.mode} after flow control optimization...`,
-          );
-          const retryResult = await this._sendCommandWithTiming(
-            this.mode,
-            VINRetriever.DATA_TIMEOUT,
-          );
-
-          if (retryResult && !this.isErrorResponse(retryResult)) {
-            void log.info(
-              `[${this.constructor.name}] Successfully received response after flow control optimization.`,
-            );
-            return retryResult;
-          } else {
-            void log.warn(
-              `[${this.constructor.name}] Command ${this.mode} still failed after optimization. Response: ${retryResult ?? 'null'}`,
-            );
-          }
-        } else {
-          void log.warn(
-            `[${this.constructor.name}] Flow control optimization failed. Proceeding with original response.`,
-          );
-        }
-      }
-
-      void log.debug(
-        `[${this.constructor.name}] Processing final response for command ${this.mode}: ${result}`,
-      );
-      return result;
-    } catch {
-      // Handle error case without using error variable
-      this.protocolState = PROTOCOL_STATES.ERROR;
-      return null;
-    }
-  }
-
-  /**
-   * Retrieves and parses the VIN.
-   * Orchestrates configuration, command sending, retries, and parsing.
-   */
   public async retrieveVIN(): Promise<string | null> {
-    await this._configureAdapterForVIN();
-    // Check if the adapter is configured successfully
-    // Verify ECU is connected and has valid protocol
-    if (
-      this.ecuState.status !== ECUConnectionStatus.CONNECTED ||
-      this.ecuState.activeProtocol === null
-    ) {
-      void log.error(
-        `[${this.constructor.name}] ECU not connected or invalid protocol. Cannot retrieve VIN.`,
-      );
+    if (this.ecuState.status !== ECUConnectionStatus.CONNECTED) {
+      void log.error('[VINRetriever] ECU not connected');
       return null;
     }
 
-    void log.debug(
-      `[${this.constructor.name}] Attempting to retrieve VIN using existing connection...`,
-    );
     let attempt = 0;
     const maxAttempts = 3;
 
     while (attempt < maxAttempts) {
       attempt++;
       try {
-        // Configure Flow Control if needed
-        await this._configureForProtocol();
+        // Configure adapter if needed
+        await this._configureAdapterForVIN();
 
-        // Send VIN request and handle response
-        const rawResponse = await this._sendVINRequestAndProcess();
-
-      
-        // If the request process failed (returned null)
-        if (rawResponse === null) {
-          void log.warn(
-            `[${this.constructor.name}] Failed to retrieve raw response for VIN on attempt ${attempt}.`,
-          );
-          // If protocol state is ERROR, stop retrying
-          if (this.protocolState === PROTOCOL_STATES.ERROR) {
-            void log.error(
-              `[${this.constructor.name}] Protocol entered ERROR state, stopping retries.`,
-            );
-            break;
-          }
-          if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
-          continue; // Try next attempt
+        // Use bluetoothSendCommandRawChunked instead of regular sendCommand
+        const response = await this.bluetoothSendCommandRawChunked('0902');
+        
+        if (!response) {
+          void log.warn('[VINRetriever] No response received');
+          continue;
         }
 
-        // --- Process the successful raw response ---
-        void log.debug(
-          `[${this.constructor.name}] Raw VIN response received: ${rawResponse}`,
-        );
-
-        // Try CAN-specific parsing first if we're using a CAN protocol
-        if (this.isCan) {
-          const canVin = this.parseCanVinResponse(rawResponse);
-          if (canVin) {
-            void log.info(`[${this.constructor.name}] Valid VIN found: ${canVin}`);
-            return canVin;
-          }
-        }
-
-        // Fall back to standard parsing if CAN parsing fails
-        const assembledResponse = assembleMultiFrameResponse(rawResponse);
-        void log.debug(
-          `[${this.constructor.name}] Assembled VIN response data: ${assembledResponse}`,
-        );
-
-        // Parse the VIN from the assembled hex data
-        const vin = parseVinFromResponse(assembledResponse);
-
-        if (vin) {
-          // Basic validation check
-          const isValidVin =
-            vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin);
-          if (isValidVin) {
-            void log.info(`[${this.constructor.name}] Valid VIN found: ${vin}`);
-            return vin; // Success! Exit loop and return VIN.
-          } else {
-            void log.warn(
-              `[${this.constructor.name}] Invalid VIN format received: ${vin}`,
-            );
-            // Consider if invalid format should be returned or treated as failure
-            return vin; // Returning potentially invalid VIN for now
-          }
+        // Convert raw chunks to hex string if needed
+        let rawResponse: string;
+        if (Array.isArray(response)) {
+          rawResponse = response.map(chunk => 
+            Buffer.from(chunk).toString('hex').toUpperCase()
+          ).join('');
         } else {
-          void log.warn(
-            `[${this.constructor.name}] Failed to parse VIN from response on attempt ${attempt}.`,
-          );
-          // If parsing failed, continue to retry
-          if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
+          rawResponse = response;
         }
-      } catch (error: unknown) {
-        // Catch unexpected errors during the attempt
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        void log.error(
-          `[${this.constructor.name}] Error during VIN retrieval attempt ${attempt}:`,
-          {
-            error: errorMsg,
-            stack: error instanceof Error ? error.stack : undefined,
-          },
-        );
-        this.protocolState = PROTOCOL_STATES.ERROR; // Mark as error
-        // Decide whether to retry on general error
-        if (attempt < maxAttempts) {
-          void log.debug(`[${this.constructor.name}] Retrying after error...`);
-          await this.delay(DELAYS_MS.RETRY);
-        } else {
-          break; // Exit loop if max attempts reached
+
+        void log.debug('[VINRetriever] Raw response:', rawResponse);
+        
+        // Process frames
+        const processedData = this.processCanFrames(rawResponse);
+        if (!processedData) {
+          void log.warn('[VINRetriever] No valid data after processing frames');
+          continue;
         }
+
+        // Extract VIN
+        const vin = this.extractVinFromHex(processedData);
+        if (vin) return vin;
+
+        void log.warn(`[VINRetriever] Attempt ${attempt} failed to find valid VIN`);
+        await this.delay(DELAYS_MS.RETRY);
+
+      } catch (error) {
+        void log.error('[VINRetriever] Error:', error);
+        if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
       }
-    } // End while loop
+    }
 
-    void log.error(
-      `[${this.constructor.name}] Failed to retrieve VIN after ${maxAttempts} attempts.`,
-    );
-    return null; // Failed after all attempts
+    return null;
   }
 
   /**
