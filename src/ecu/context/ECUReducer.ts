@@ -1,4 +1,3 @@
-import { log } from '../../utils/logger';
 import { ECUConnectionStatus } from '../utils/constants'; // Import PROTOCOL if needed
 import { ECUActionType } from '../utils/types';
 
@@ -113,11 +112,6 @@ export const initialState: ECUState = {
  * @returns New ECU state
  */
 export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
-  // Use void operator to mark promise as intentionally not awaited
-  void log.debug(`[ECUReducer] Action: ${action.type}`, {
-    payload: action.payload,
-  });
-
   switch (action.type) {
     case ECUActionType.CONNECT_START: {
       return {
@@ -478,19 +472,19 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
       return {
         ...state,
         rawDTCLoading: false,
-        rawCurrentDTCs: action.payload?.data ?? null,
+        rawCurrentDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_PENDING_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPendingDTCs: action.payload?.data ?? null,
+        rawPendingDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_PERMANENT_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPermanentDTCs: action.payload?.data ?? null,
+        rawPermanentDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_DTCS_FAILURE:
       return {
@@ -499,13 +493,11 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         lastError: action.payload?.error ?? 'Failed to fetch raw DTCs',
       };
 
+    case ECUActionType.SYNC_STATE:
+      // Sync entire state from context
+      return action.payload as ECUState;
+
     default:
-      // Optional: Add exhaustive check for unhandled action types
-      // const exhaustiveCheck: never = action; // Uncomment for exhaustive checks
-      // If an unknown action type is received, log a warning and return current state
-      void log.warn(
-        `[ECUReducer] Received unknown action type: ${(action as ECUAction).type}`,
-      );
       return state;
   }
 };

@@ -50,7 +50,10 @@ export const ECUActionType = {
   FETCH_RAW_PERMANENT_DTCS_SUCCESS: 'FETCH_RAW_PERMANENT_DTCS_SUCCESS',
   /** Indicates raw DTC retrieval failed, with error info */
   FETCH_RAW_DTCS_FAILURE: 'FETCH_RAW_DTCS_FAILURE',
+  SYNC_STATE: 'SYNC_STATE' as const,
 } as const;
+
+export type ECUActionTypes = (typeof ECUActionType)[keyof typeof ECUActionType];
 
 /**
  * Type definition for ECU actions passed to the reducer
@@ -59,12 +62,16 @@ export const ECUActionType = {
  * the ECU state management system.
  */
 export interface ECUActionPayload {
-  error?: string;
-  protocol?: number | null;
+  protocol?: PROTOCOL | null;
   protocolName?: string | null;
   voltage?: number | null;
   detectedEcuAddresses?: string[];
-  data?: unknown;
+  error?: string;
+  initCommand?: string;
+  initResponse?: string;
+  command?: string;
+  response?: string;
+  data?: RawDTCResponse | null;
   dtcs?: string[];
 }
 

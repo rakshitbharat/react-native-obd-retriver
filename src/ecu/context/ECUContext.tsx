@@ -31,6 +31,7 @@ import type {
   ECUActionPayload,
 } from '../utils/types';
 import { ecuStore } from './ECUStore';
+import { useECUStoreSync } from '../hooks/useECUStoreSync';
 
 /**
  * React Context for ECU communication
@@ -101,12 +102,10 @@ interface ECUProviderProps {
  */
 export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   const [state, dispatch] = ecuStore.useSyncReducer();
-  const {
-    sendCommand: bluetoothSendCommand, // Rename to avoid conflict
-    connectedDevice,
-    // error: bluetoothError, // Get BT level error if needed
-    // isConnecting: isBluetoothConnecting, // Get BT level connecting status
-  } = useBluetooth();
+  const { sendCommand: bluetoothSendCommand, connectedDevice } = useBluetooth();
+
+  // Sync context state with store
+  useECUStoreSync(state);
 
   // Determine connection status based on connectedDevice (Bluetooth level)
   const isBluetoothConnected = !!connectedDevice;
