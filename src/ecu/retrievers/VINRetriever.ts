@@ -103,6 +103,7 @@ export class VINRetriever {
 
   // Injected dependencies
   private readonly sendCommand: SendCommandFunction;
+  private readonly bluetoothSendCommandRawChunked: SendCommandFunction;
 
   // Internal state
   private readonly mode: string = VINRetriever.SERVICE_MODE.REQUEST;
@@ -118,8 +119,11 @@ export class VINRetriever {
   // Add ecuState property
   private readonly ecuState: ECUState;
 
-  constructor(sendCommand: SendCommandFunction) {
+  constructor(sendCommand: SendCommandFunction,
+    bluetoothSendCommandRawChunked: SendCommandFunction,
+  ) {
     this.sendCommand = sendCommand;
+    this.bluetoothSendCommandRawChunked = bluetoothSendCommandRawChunked;
     const currentState = ecuStore.getState();
     this.ecuState = currentState;
 
@@ -281,6 +285,84 @@ export class VINRetriever {
     return false;
   }
 
+  private parseCanVinResponse(rawResponse: string): string | null {
+    try {
+      void log.debug(`[${this.constructor.name}] Raw CAN response: ${rawResponse}`);
+      
+      // Initial cleanup - remove prompt and whitespace
+      const response = rawResponse.replace(/[>\r\n\s]/g, '').toUpperCase();
+      void log.debug(`[${this.constructor.name}] Cleaned response: ${response}`);
+
+      // Parse CAN frames - match frames with format 7ExYY... where x is frame number
+      const frames = response.match(/7E[0-9][0-9A-F]+/g) || [];
+      void log.debug(`[${this.constructor.name}] Parsed frames:`, frames);
+
+      if (frames.length === 0) {
+        void log.warn(`[${this.constructor.name}] No valid CAN frames found`);
+        return null;
+      }
+
+      // Extract and order the data from frames
+      let vinHexString = '';
+      for (const frame of frames) {
+        // Skip first 4 chars (7Ex8) for first frame, 4 chars (7Ex8) for consecutive
+        const dataStart = frame.startsWith('7E8') ? 8 : 4;
+        const data = frame.substring(dataStart);
+        vinHexString += data;
+      }
+
+      void log.debug(`[${this.constructor.name}] Combined hex data: ${vinHexString}`);
+
+      // Find start of VIN data after service 09 PID 02 (4902)
+      const serviceMatch = vinHexString.match(/4902[0-9A-F]+/);
+      if (!serviceMatch) {
+        void log.warn(`[${this.constructor.name}] No service 09 PID 02 marker found`);
+        return null;
+      }
+
+      // Extract the actual VIN data after 4902
+      const vinHexData = serviceMatch[0].substring(4);
+      void log.debug(`[${this.constructor.name}] VIN hex data: ${vinHexData}`);
+
+      // Convert hex to ASCII characters
+      let vin = '';
+      for (let i = 0; i < vinHexData.length && vin.length < 17; i += 2) {
+        const hexPair = vinHexData.substring(i, i + 2);
+        const charCode = parseInt(hexPair, 16);
+        
+        // Only include valid VIN characters
+        const char = String.fromCharCode(charCode);
+        if (/[A-HJ-NPR-Z0-9]/i.test(char)) {
+          vin += char;
+        } else {
+          void log.warn(
+            `[${this.constructor.name}] Invalid VIN character: ${char} (hex: ${hexPair})`
+          );
+        }
+      }
+
+      void log.debug(`[${this.constructor.name}] Extracted VIN: ${vin}`);
+
+      // Validate final VIN
+      if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
+        void log.info(`[${this.constructor.name}] Valid VIN found: ${vin}`);
+        return vin;
+      }
+
+      void log.warn(
+        `[${this.constructor.name}] Invalid VIN format: ${vin} (length: ${vin.length})`
+      );
+      return null;
+
+    } catch (error) {
+      void log.error(`[${this.constructor.name}] Error parsing CAN VIN response:`, {
+        error: error instanceof Error ? error.message : String(error),
+        raw: rawResponse
+      });
+      return null;
+    }
+  }
+
   private async _sendVINRequestAndProcess(): Promise<string | null> {
     try {
       if (this.protocolState !== PROTOCOL_STATES.READY) {
@@ -394,6 +476,8 @@ export class VINRetriever {
         // Send VIN request and handle response
         const rawResponse = await this._sendVINRequestAndProcess();
 
+        console.log('rawResponse', JSON.stringify(await this.bluetoothSendCommandRawChunked('0902')));
+
         // If the request process failed (returned null)
         if (rawResponse === null) {
           void log.warn(
@@ -415,7 +499,16 @@ export class VINRetriever {
           `[${this.constructor.name}] Raw VIN response received: ${rawResponse}`,
         );
 
-        // Assemble potentially multi-frame response
+        // Try CAN-specific parsing first if we're using a CAN protocol
+        if (this.isCan) {
+          const canVin = this.parseCanVinResponse(rawResponse);
+          if (canVin) {
+            void log.info(`[${this.constructor.name}] Valid VIN found: ${canVin}`);
+            return canVin;
+          }
+        }
+
+        // Fall back to standard parsing if CAN parsing fails
         const assembledResponse = assembleMultiFrameResponse(rawResponse);
         void log.debug(
           `[${this.constructor.name}] Assembled VIN response data: ${assembledResponse}`,

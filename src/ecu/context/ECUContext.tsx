@@ -108,6 +108,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(ecuReducer, initialState);
   const {
     sendCommand: bluetoothSendCommand,
+    sendCommandRawChunked: bluetoothSendCommandRawChunked,
     connectedDevice,
     error,
   } = useBluetooth();
@@ -215,6 +216,53 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       }
     },
     [isBluetoothConnected, bluetoothSendCommand], // Dependencies: BT connection status and the BT send function
+  );
+
+  // --- Use the raw chunked send command if available ---
+  // This is used for raw command sending, e.g., for AT commands
+  const sendCommandRawChunked = useCallback(
+    async (
+      command: string,
+      timeout?: number | { timeout?: number },
+    ): Promise<string | null> => {
+      // Check Bluetooth connection status before sending
+      if (!isBluetoothConnected || !bluetoothSendCommandRawChunked) {
+        await log.warn(
+          '[ECUContext] Attempted to send command while Bluetooth disconnected or command function unavailable:',
+          { command },
+        );
+        // Return null to indicate failure as per SendCommandFunction type
+        return null;
+      }
+      try {
+        await log.debug(
+          `[ECUContext] Sending raw chunked command via BT hook: ${command}`,
+          { timeout },
+        );
+        // Pass timeout if provided
+        const response = await bluetoothSendCommandRawChunked(
+          command,
+          // Adapt timeout format for the library
+          typeof timeout === 'number' ? { timeout } : timeout,
+        );
+        await log.debug(
+          `[ECUContext] Received response for "${command}": ${response ?? 'null'}`,
+        );
+        return response;
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        await log.error(
+          `[ECUContext] Error sending raw chunked command "${command}" via BT hook:`,
+          {
+            error: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+          },
+        );
+        return null;
+      }
+    },
+    [isBluetoothConnected, bluetoothSendCommandRawChunked], // Dependencies: BT connection status and the BT send function
   );
 
   // --- Core ECU Connection Logic ---
@@ -388,13 +436,13 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
     }
 
     try {
-      return await getVehicleVIN(sendCommand);
+      return await getVehicleVIN(sendCommand, sendCommandRawChunked);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ECUContext] Failed to get VIN:', { error: errorMsg });
       return null;
     }
-  }, [sendCommand]);
+  }, [sendCommand, sendCommandRawChunked]);
 
   const clearDTCs = useCallback(
     async (skipVerification: boolean = false): Promise<boolean> => {

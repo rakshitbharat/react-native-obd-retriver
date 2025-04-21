@@ -360,6 +360,24 @@ export interface ECUContextValue {
    * ```
    */
   sendCommand: SendCommandFunction;
+  /**
+   * Sends a command to the OBD adapter and waits for a response
+   *
+   * This function is used for sending commands and receiving responses.
+   * It handles the command formatting and response parsing.
+   *
+   * @param command - The command string to send (e.g., "0100", "ATDPN")
+   * @param options - Optional timeout in ms or options object
+   * @returns Promise resolving to the response string or null on failure
+   * @example
+   * ```typescript
+   * const response = await sendCommand("0100");
+   * if (response) {
+   *   console.log(`Response: ${response}`);
+   * }
+   * ```
+   */
+  sendCommandWithResponse: SendCommandFunction;
 }
 
 /**

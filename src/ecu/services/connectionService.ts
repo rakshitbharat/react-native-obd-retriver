@@ -554,13 +554,14 @@ export const disconnectFromECU = async (
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
+  bluetoothSendCommandRawChunked: SendCommandFunction,
 ): Promise<string | null> => {
   await log.debug(
     '[connectionService] Attempting to retrieve VIN using VINRetriever...',
   );
   try {
     // Create an instance of the VINRetriever
-    const vinRetriever = new VINRetriever(sendCommand);
+    const vinRetriever = new VINRetriever(sendCommand, bluetoothSendCommandRawChunked);
 
     // Call the retriever's method to get the VIN
     const vin = await vinRetriever.retrieveVIN();
