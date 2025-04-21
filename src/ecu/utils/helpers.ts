@@ -194,66 +194,97 @@ export function extractEcuAddresses(
     .split(/[\r\n]+/)
     .filter(line => line.trim().length > 0);
 
-  void log.debug(`[Helper:extractEcu] Processing response lines: ${lines.join(' | ')}`);
-
   for (const line of lines) {
-    let dataPart = line.trim().toUpperCase();
+    let dataPart = line.trim().toUpperCase(); // Work with uppercase hex
 
-    // Remove ELM's optional line/frame numbering (e.g., "0:", "1:")
+    // Remove ELM's optional line/frame numbering (e.g., "0:", "1:") if present
     dataPart = dataPart.replace(/^\s*[0-9A-F]{1,2}:\s*/, '');
 
-    // Remove prompt and other non-hex characters
-    dataPart = dataPart.replace(/[^0-9A-F]/g, '');
-
-    void log.debug(`[Helper:extractEcu] Processing cleaned line: ${dataPart}`);
-
-    // Skip invalid data
-    if (dataPart.length < 6) { // Minimum length for a CAN frame
-      continue;
+    // Check if the remaining part is just hex data or known non-header keywords
+    if (
+      !/^[0-9A-F\s]+$/.test(dataPart) ||
+      dataPart === RESPONSE_KEYWORDS.OK ||
+      dataPart === RESPONSE_KEYWORDS.NO_DATA ||
+      isResponseError(dataPart)
+    ) {
+      continue; // Skip lines that are not hex data or are known status messages
     }
+
+    // Remove potential response codes like 41, 43, 49 etc. before header checks? Risky.
+    // Let's try matching headers directly.
 
     // --- CAN Header Detection ---
-    // Match 11-bit CAN header (7E8-7EF) at the start
-    // Updated pattern to match headers in concatenated format
-    if (dataPart.startsWith('7E8') || dataPart.startsWith('7E9') || 
-        dataPart.startsWith('7EA') || dataPart.startsWith('7EB') ||
-        dataPart.startsWith('7EC') || dataPart.startsWith('7ED') ||
-        dataPart.startsWith('7EE') || dataPart.startsWith('7EF')) {
-      const header = dataPart.substring(0, 3);
-      void log.debug(`[Helper:extractEcu] Found CAN header: ${header}`);
-      addresses.add(header);
+    // Match 11-bit CAN header (7E8-7EF) at the start, must be followed by data
+    let match = dataPart.match(/^(7E[89ABCDEF])([0-9A-F]{2})/i); // Ensure data follows header
+    if (match?.[1] && match[2]) {
+      addresses.add(match[1]); // Add the full 7Ex header
+      continue; // Prioritize this match for the line
+    }
+
+    // Match 29-bit CAN header (18DA F1 xx or 18DB 33 F1) at the start
+    // Look for 18DA followed by F1 (tester) and xx (ECU) -> 18DAF1xx
+    match = dataPart.match(/^(18DAF1[0-9A-F]{2})/i); // Physical response
+    if (match?.[1] && dataPart.length > match[1].length) {
+      addresses.add(match[1]); // Add the full 18DAF1xx header
+      continue;
+    }
+    // Look for 18DA followed by xx (ECU) and F1 (tester) -> 18DAxxF1 (less common but possible)
+    match = dataPart.match(/^(18DA[0-9A-F]{2}F1)/i);
+    if (match?.[1] && dataPart.length > match[1].length) {
+      addresses.add(match[1]); // Add the full 18DAxxF1 header
+      continue;
+    }
+    // Look for functional addressing response 18DB33F1 (often used for requests, less for responses)
+    match = dataPart.match(/^(18DB33F1)/i); // Functional addressing
+    if (match?.[1] && dataPart.length > match[1].length) {
+      // Don't typically add functional address as ECU address unless no physical found
+      // addresses.add(match[1]);
       continue;
     }
 
-    // Match 29-bit CAN header patterns
-    if (dataPart.startsWith('18DA')) {
-      // Handle both formats: 18DAF1xx and 18DAxxF1
-      const fullHeader = dataPart.substring(0, 8);
-      if (fullHeader.includes('F1')) {
-        void log.debug(`[Helper:extractEcu] Found 29-bit CAN header: ${fullHeader}`);
-        addresses.add(fullHeader);
+    // --- ISO/KWP Header Detection (typically 3 bytes: Format/Target, Target/Source, Source/Length or Data) ---
+    // Examples: 48 6B 11 (ISO), 81 F1 11 (KWP Addr), 68 6A F1 (KWP Fmt)
+    // We usually want the Source address (ECU address, often F1 for tester, 10/11/etc for ECU)
+    match = dataPart.match(/^([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})/i);
+    if (match?.[1] && match[2] && match[3]) {
+      const formatTarget = match[1];
+      const targetSource = match[2];
+      const sourceLengthOrData = match[3];
+
+      // ISO 9141-2 (e.g., 48 6B 11): Source is often the 3rd byte
+      if (formatTarget === '48' && targetSource === '6B') {
+        addresses.add(sourceLengthOrData);
+        continue;
       }
-      continue;
-    }
-
-    // --- ISO/KWP Header Detection ---
-    // Only process if we haven't found CAN headers
-    if (addresses.size === 0) {
-      const potentialHeader = dataPart.substring(0, 6); // First 3 bytes
-      if (/^[0-9A-F]{6}$/.test(potentialHeader)) {
-        // Extract potential ECU address from ISO/KWP format
-        const ecuAddr = dataPart.substring(4, 6); // Usually the third byte
-        if (ecuAddr !== 'F1') { // Exclude tester address
-          void log.debug(`[Helper:extractEcu] Found ISO/KWP ECU address: ${ecuAddr}`);
-          addresses.add(ecuAddr);
+      // KWP (e.g., 68 6A F1 or 81 F1 11): Source is often F1 (tester), Target is 2nd byte
+      // So the ECU address might be in the 2nd byte (targetSource) if format indicates addressing (e.g., 8x)
+      // Or the 3rd byte (sourceLengthOrData) if format indicates target/source/length (e.g., 6x)
+      if (formatTarget.startsWith('8')) {
+        // Addressing format
+        addresses.add(targetSource); // ECU is likely Target
+        continue;
+      }
+      if (formatTarget.startsWith('4') || formatTarget.startsWith('6')) {
+        // Message format
+        if (targetSource !== 'F1') {
+          // If target is not the tester, it might be the ECU
+          addresses.add(targetSource);
+        } else if (sourceLengthOrData !== 'F1') {
+          // If source is not the tester, it might be the ECU
+          addresses.add(sourceLengthOrData);
         }
+        continue;
       }
     }
+
+    // --- Fallback for Headers Off ---
+    // If headers are off (ATH0), the response might start directly with the service byte (e.g., 41, 43, 49)
+    // In this case, we cannot reliably determine the ECU address from the response itself.
+    // Do not add anything in this case.
   }
 
-  const result = Array.from(addresses);
-  void log.debug(`[Helper:extractEcu] Extracted addresses: ${result.join(', ') || 'none'}`);
-  return result;
+  // Convert Set to Array before returning
+  return Array.from(addresses);
 }
 
 // --- Functions below are related to VIN/DTC parsing ---
@@ -635,7 +666,7 @@ export const parseDtcsFromResponse = (
   let dtcHexData = responseData.substring(startIndex + modePrefix.length);
 
   // The first byte *after* the prefix *might* be the number of DTCs encoded in the frame.
-  // Example: 43 01 12 34 -> dtcHexData starts with "0212345678"
+  // Example: 43 02 1234 5678 -> dtcHexData starts with "0212345678"
   // It's safer *not* to rely on this count byte for parsing, but we can log it.
   if (dtcHexData.length >= 2) {
     const potentialCountHex = dtcHexData.substring(0, 2);

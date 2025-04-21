@@ -8,9 +8,55 @@ import {
 } from '../utils/helpers';
 
 import type { SendCommandFunction } from '../utils/types';
-import type { RawDTCResponse } from './types';
 
-export type { RawDTCResponse };
+/**
+ * Raw DTC response structure containing both parsed and unparsed data
+ *
+ * This interface encapsulates all DTC response data from the vehicle,
+ * providing both raw response data and processed information.
+ *
+ * @example
+ * ```typescript
+ * // Example of RawDTCResponse for a vehicle with two DTCs
+ * const dtcResponse: RawDTCResponse = {
+ *   rawString: "7E8 43 02 01 43 00 00 00 00\r7E9 43 00 00 00 00 00 00 00",
+ *   rawResponse: [55, 69, 56, 32, 52, 51, 32, ...], // ASCII values
+ *   response: [
+ *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
+ *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
+ *   ],
+ *   rawBytesResponseFromSendCommand: [
+ *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
+ *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
+ *   ],
+ *   isCan: true,
+ *   protocolNumber: 6, // ISO 15765-4 CAN (11-bit, 500kbps)
+ *   ecuAddress: "7E8" // Primary ECU address
+ * };
+ * ```
+ */
+export interface RawDTCResponse {
+  /** Complete raw response string from the adapter */
+  rawString: string | null;
+
+  /** Raw response as array of ASCII byte values */
+  rawResponse: number[] | null;
+
+  /** Response parsed into frames and hex values */
+  response: string[][] | null;
+
+  /** Duplicate of response field for backward compatibility */
+  rawBytesResponseFromSendCommand: string[][];
+
+  /** Whether the current protocol is CAN-based */
+  isCan: boolean;
+
+  /** Current protocol number (from PROTOCOL enum) */
+  protocolNumber: number;
+
+  /** Primary ECU address that responded (e.g., "7E8") */
+  ecuAddress: string | undefined;
+}
 
 /**
  * Base class for all DTC (Diagnostic Trouble Code) retrievers
@@ -531,10 +577,7 @@ export class BaseDTCRetriever {
         // Return the processed response
         return {
           rawString: result.rawString,
-          rawResponse:
-            result.rawResponse?.map(byte =>
-              byte.toString(16).padStart(2, '0'),
-            ) ?? null,
+          rawResponse: result.rawResponse,
           response: result.response,
           // Ensure rawBytesResponseFromSendCommand matches the structure of `response`
           rawBytesResponseFromSendCommand: result.response ?? [],

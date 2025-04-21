@@ -5,7 +5,7 @@ import { DTCRawDataViewer } from '../components/DTCRawDataViewer';
 import { useDTCRetriever } from '../ecu/hooks/useDTCRetriever';
 import { useECU } from '../ecu/hooks/useECU';
 import { ECUConnectionStatus } from '../ecu/utils/constants';
-import { Colors } from '../utils/colors';
+import { Colors } from '../../utils/colors';
 
 import type { RawDTCResponse } from '../ecu/retrievers/BaseDTCRetriever';
 import type { JSX } from 'react';

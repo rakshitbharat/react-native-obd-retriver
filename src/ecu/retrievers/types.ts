@@ -1,29 +1,16 @@
-/**
- * Service mode interface for OBD-II diagnostic services
- */
 export interface ServiceMode {
+  /** OBD-II service mode request code (e.g., '03', '07', '0A') */
   REQUEST: string;
-  RESPONSE: number;
-  NAME: string;
-  DESCRIPTION: string;
-  troubleCodeType: string;
-}
 
-/**
- * Raw DTC response interface
- */
-export interface RawDTCResponse {
-  rawString: string | null;
-  rawResponse: string[] | null;
-  response: string[][] | null;
-  rawBytesResponseFromSendCommand: string[][];
-  isCan: boolean;
-  protocolNumber: number;
-  ecuAddress: string | undefined;
-  headerFormat?: string;
-  flowControlConfig?: {
-    id: string;
-    blockSize?: number;
-    separationTime?: number;
-  };
+  /** Expected response code value (e.g., 0x43, 0x47, 0x4A) */
+  RESPONSE: number;
+
+  /** Service mode name identifier */
+  NAME: string;
+
+  /** Human-readable description of the service mode */
+  DESCRIPTION: string;
+
+  /** Type identifier used for DTC classification */
+  troubleCodeType: string;
 }

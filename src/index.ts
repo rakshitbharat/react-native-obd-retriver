@@ -44,17 +44,8 @@ export { useECU } from './ecu/hooks/useECU';
 export { useDTCRetriever } from './ecu/hooks/useDTCRetriever';
 
 // Context Components
-export { ECUProvider, ECUContext } from './ecu/context/ECUContext';
+export { ECUContext, ECUProvider } from './ecu/context/ECUContext';
 
-// Types from retrievers
-export type { 
-  ServiceMode, 
-  RawDTCResponse,
-} from './ecu/retrievers/types';
-
-// Export complete retrievers namespace
-export * as retrievers from './ecu/retrievers';
-
-// Export complete utils namespace
-export * from './ecu/utils/types';
-export * from './utils/colors';
+// Export all types, constants, and utilities from the barrel file
+// This includes ECUState, ECUContextValue, ECUConnectionStatus, OBD_MODE, etc.
+export * from './ecu/types';
