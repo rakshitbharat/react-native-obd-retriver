@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useECU } from '../ecu/hooks/useECU';
 // ECUConnectionStatus is part of state, no longer directly used for conditional rendering here
 import { ECUConnectionStatus } from '../ecu/utils/constants'; // Keep import if using status value
+import { Colors } from '../utils/colors';
 
 export const DTCManager: React.FC = () => {
   const { state } = useECU();
@@ -62,7 +63,7 @@ export const DTCManager: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: Colors.GRAY_BG,
     borderRadius: 8,
     margin: 16,
     padding: 16,
@@ -79,11 +80,11 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   errorText: {
-    color: 'red',
+    color: Colors.ERROR_TEXT,
     marginTop: 8,
   },
   notConnectedText: {
-    color: '#888',
+    color: Colors.LIGHT_MUTED_TEXT,
     fontStyle: 'italic',
     marginTop: 16,
   },

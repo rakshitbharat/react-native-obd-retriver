@@ -18,6 +18,8 @@ export const ECUActionType = {
   CONNECT_FAILURE: 'CONNECT_FAILURE',
   /** Indicates ECU disconnection (protocol closed) */
   DISCONNECT: 'DISCONNECT',
+  /** Indicates disconnection was successful */
+  DISCONNECT_SUCCESS: 'DISCONNECT_SUCCESS',
   /** Updates ECU information like voltage */
   SET_ECU_INFO: 'SET_ECU_INFO', // Used for updating info like voltage
   /** Completely resets the ECU state */
@@ -56,11 +58,20 @@ export const ECUActionType = {
  * This represents the standard action object structure used throughout
  * the ECU state management system.
  */
+export interface ECUActionPayload {
+  error?: string;
+  protocol?: number | null;
+  protocolName?: string | null;
+  voltage?: number | null;
+  detectedEcuAddresses?: string[];
+  data?: unknown;
+  dtcs?: string[];
+}
+
+// Update ECUAction type to use the new payload
 export type ECUAction = {
-  /** The action type, used by the reducer to determine how to update state */
-  type: keyof typeof ECUActionType; // Use keys of the const object
-  /** Optional payload containing data related to the action */
-  payload?: ECUActionPayload; // Payload is optional
+  type: keyof typeof ECUActionType;
+  payload?: ECUActionPayload;
 };
 
 /**
@@ -72,23 +83,6 @@ export interface HeaderFormatConfig {
   addressingMode: 'functional' | 'physical';
   defaultTxHeader: string;
   defaultRxHeader: string;
-}
-
-/**
- * Payload type for ECU actions
- */
-export interface ECUActionPayload {
-  protocol?: number | null;
-  protocolName?: string | null;
-  detectedEcuAddresses?: string[];
-  voltage?: number | null;
-  response?: string | null;
-  command?: string | null;  // Add this line
-  error?: string;
-  data?: any;
-  dtcs?: any[];
-  initCommand?: string;
-  initResponse?: string | null;
 }
 
 /**
@@ -226,7 +220,7 @@ export interface ECUContextValue {
    * }
    * ```
    */
-  // eslint-disable-next-line no-unused-vars
+
   clearDTCs: (skipVerification?: boolean) => Promise<boolean>;
 
   /**
@@ -336,7 +330,7 @@ export interface ECUState {
   lastError: string | null;
 
   /** Last read device voltage (e.g., "12.3V") */
-  deviceVoltage: number | null;  // Changed from string | null to number | null
+  deviceVoltage: number | null; // Changed from string | null to number | null
 
   /** List of ECU addresses found during connection (e.g., ["7E8", "7E9"]) */
   detectedEcuAddresses: string[];
@@ -409,9 +403,8 @@ export interface ECUInitializationState {
 // Type definition for the sendCommand function used throughout the ECU module
 // Aligns with react-native-bluetooth-obd-manager hook's sendCommand signature
 export type SendCommandFunction = (
-  // eslint-disable-next-line no-unused-vars
   command: string,
-  // eslint-disable-next-line no-unused-vars
+
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
@@ -564,7 +557,7 @@ export interface CanProtocolConfig extends ProtocolTimingConfig {
    * @param fcHeader - Flow control header to use in commands
    * @returns Array of AT commands for flow control setup
    */
-  // eslint-disable-next-line no-unused-vars
+
   flowControlCommands: (fcHeader: string) => string[];
 }
 

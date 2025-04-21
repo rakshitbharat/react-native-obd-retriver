@@ -142,7 +142,7 @@ export const initializeAdapter = async (
   sendCommand: SendCommandFunction,
 ): Promise<boolean> => {
   await log.debug('[connectionService] Initializing adapter...');
-  
+
   const initCommands = [
     {
       cmd: ELM_COMMANDS.RESET,
@@ -194,10 +194,13 @@ export const initializeAdapter = async (
    */
   const isValidResponse = (response: string | null): boolean => {
     if (!response) return false;
-    
+
     // Clean response by removing prompts, carriage returns, etc
-    const cleaned = response.replace(/[\r\n>]/g, '').trim().toUpperCase();
-    
+    const cleaned = response
+      .replace(/[\r\n>]/g, '')
+      .trim()
+      .toUpperCase();
+
     // Check for common valid responses (case insensitive)
     return [
       'OK',
@@ -207,12 +210,18 @@ export const initializeAdapter = async (
       'ATL0OK',
       'ATS0OK',
       'ATH0OK',
-      'ATAT0OK'
+      'ATAT0OK',
     ].some(validResponse => cleaned.includes(validResponse));
   };
 
   try {
-    for (const { cmd, delay: cmdDelay, ignoreError, checkOk, timeout } of initCommands) {
+    for (const {
+      cmd,
+      delay: cmdDelay,
+      ignoreError,
+      checkOk,
+      timeout,
+    } of initCommands) {
       await log.debug(`[connectionService] Sending init command: ${cmd}`);
       const response = await sendCommand(cmd, timeout);
       await delay(cmdDelay);
@@ -364,9 +373,9 @@ export const connectToECU = async (
     if (testResponse) {
       // Consider any response containing 7E8, 7E9, 7E0 (CAN IDs) or 41 (response code) as valid
       const cleaned = cleanResponse(testResponse).toUpperCase();
-      const isValidResponse = 
-        cleaned.includes('7E8') || 
-        cleaned.includes('7E9') || 
+      const isValidResponse =
+        cleaned.includes('7E8') ||
+        cleaned.includes('7E9') ||
         cleaned.includes('7E0') ||
         cleaned.includes('41') ||
         cleaned.includes('SEARCHING');

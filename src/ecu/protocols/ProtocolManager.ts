@@ -5,15 +5,8 @@ import {
   PROTOCOL,
   PROTOCOL_DESCRIPTIONS,
   PROTOCOL_TRY_ORDER,
-  RESPONSE_KEYWORDS,
   STANDARD_PIDS, // Import standard PIDs
 } from '../utils/constants';
-import {
-  cleanResponse,
-  extractProtocolNumber,
-  isResponseError,
-  isResponseOk,
-} from '../utils/helpers';
 
 import type { SendCommandFunction } from '../utils/types';
 
@@ -105,7 +98,7 @@ export class ProtocolManager {
         ELM_COMMANDS.GET_PROTOCOL_NUM,
         2000,
       );
-      const protocolNum = extractProtocolNumber(response);
+      const protocolNum = this.extractProtocolNumber(response);
       if (protocolNum !== null) {
         await log.debug(
           `[ProtocolManager] Current protocol number: ${protocolNum}`,
@@ -130,26 +123,32 @@ export class ProtocolManager {
   private isValidProtocolResponse(response: string | null): boolean {
     if (!response) return false;
     const upper = response.toUpperCase().trim();
-    
+
     // More generous validation including initial response formats
     return (
-      upper.includes('41') ||      // Standard OBD response
-      upper.includes('7E8') ||     // CAN ECU address
-      upper.includes('7E9') ||     // Additional CAN ECU
-      upper.includes('7E0') ||     // More CAN addresses
-      upper.includes('007F') ||    // Valid PID response pattern
-      upper.includes('7FFFFF')     // Common response pattern for 0100
+      upper.includes('41') || // Standard OBD response
+      upper.includes('7E8') || // CAN ECU address
+      upper.includes('7E9') || // Additional CAN ECU
+      upper.includes('7E0') || // More CAN addresses
+      upper.includes('007F') || // Valid PID response pattern
+      upper.includes('7FFFFF') // Common response pattern for 0100
     );
   }
 
-  private async sendProtocolTestCommand(maxRetries: number = 3, timeout: number = 5000): Promise<string | null> {
+  private async sendProtocolTestCommand(
+    maxRetries: number = 3,
+    timeout: number = 5000,
+  ): Promise<string | null> {
     let attempts = 0;
     let lastResponse: string | null = null;
-    
+
     while (attempts < maxRetries) {
-      const testResponse = await this.sendCommand(PROTOCOL_TEST_COMMAND, timeout);
+      const testResponse = await this.sendCommand(
+        PROTOCOL_TEST_COMMAND,
+        timeout,
+      );
       lastResponse = testResponse;
-      
+
       if (!testResponse) {
         attempts++;
         await this.delay(DELAYS_MS.COMMAND_SHORT);
@@ -157,10 +156,12 @@ export class ProtocolManager {
       }
 
       const upper = testResponse.toUpperCase();
-      
+
       // If we get SEARCHING, wait longer and retry
       if (upper.includes('SEARCHING')) {
-        await log.debug(`[ProtocolManager] Got SEARCHING response on attempt ${attempts + 1}, retrying...`);
+        await log.debug(
+          `[ProtocolManager] Got SEARCHING response on attempt ${attempts + 1}, retrying...`,
+        );
         await this.delay(DELAYS_MS.COMMAND_MEDIUM);
         attempts++;
         continue;
@@ -173,8 +174,8 @@ export class ProtocolManager {
 
       // If we got an explicit error
       if (
-        upper.includes('ERROR') || 
-        upper.includes('UNABLE') || 
+        upper.includes('ERROR') ||
+        upper.includes('UNABLE') ||
         upper.includes('?') ||
         upper.includes('CAN ERROR')
       ) {
@@ -186,16 +187,23 @@ export class ProtocolManager {
     }
 
     // If our last response was somewhat valid but didn't match strict criteria
-    if (lastResponse && 
-        (lastResponse.includes('41') || lastResponse.includes('7F'))) {
+    if (
+      lastResponse &&
+      (lastResponse.includes('41') || lastResponse.includes('7F'))
+    ) {
       return lastResponse;
     }
 
-    await log.warn(`[ProtocolManager] Test command failed after ${maxRetries} attempts`);
+    await log.warn(
+      `[ProtocolManager] Test command failed after ${maxRetries} attempts`,
+    );
     return null;
   }
 
-  async detectAndSetProtocol(): Promise<{ protocol: PROTOCOL; name: string; } | null> {
+  async detectAndSetProtocol(): Promise<{
+    protocol: PROTOCOL;
+    name: string;
+  } | null> {
     await log.debug(
       '[ProtocolManager] Starting protocol detection sequence...',
     );
@@ -211,7 +219,10 @@ export class ProtocolManager {
 
       // More liberal response validation helper
       if (autoSetResponse) {
-        const upper = autoSetResponse.toUpperCase().replace(/[\r\n>]/g, '').trim();
+        const upper = autoSetResponse
+          .toUpperCase()
+          .replace(/[\r\n>]/g, '')
+          .trim();
         if (
           upper.includes('OK') ||
           upper.includes('ELM') ||
@@ -223,14 +234,17 @@ export class ProtocolManager {
           upper.includes('BUS')
         ) {
           await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2); // Double the delay for auto protocol
-          
+
           const verifyResponse = await this.sendProtocolTestCommand(4, 8000); // More retries and longer timeout
-          
+
           if (verifyResponse) {
             const protocolNum = await this.getCurrentProtocolNumber();
             if (protocolNum !== null && protocolNum !== PROTOCOL.AUTO) {
-              await log.info(`[ProtocolManager] Auto protocol verified with response: ${verifyResponse}`);
-              const protocolName = PROTOCOL_DESCRIPTIONS[protocolNum] ?? `Protocol ${protocolNum}`;
+              await log.info(
+                `[ProtocolManager] Auto protocol verified with response: ${verifyResponse}`,
+              );
+              const protocolName =
+                PROTOCOL_DESCRIPTIONS[protocolNum] ?? `Protocol ${protocolNum}`;
               return { protocol: protocolNum, name: protocolName };
             }
           }
@@ -271,14 +285,17 @@ export class ProtocolManager {
       if (Number(protocol) === PROTOCOL.AUTO) continue;
 
       const protocolNumHex = protocol.toString(16).toUpperCase();
-      const protocolName = PROTOCOL_DESCRIPTIONS[protocol] ?? `Protocol ${protocolNumHex}`;
-      await log.debug(`[ProtocolManager] Trying protocol: ${protocolName} (${protocolNumHex})...`);
+      const protocolName =
+        PROTOCOL_DESCRIPTIONS[protocol] ?? `Protocol ${protocolNumHex}`;
+      await log.debug(
+        `[ProtocolManager] Trying protocol: ${protocolName} (${protocolNumHex})...`,
+      );
 
       try {
         // Try Protocol command (ATTP)
         const tryCmd = `${ELM_COMMANDS.TRY_PROTOCOL_PREFIX}${protocolNumHex}`;
         const tryResponse = await this.sendCommand(tryCmd, 10000);
-        
+
         // More lenient response checking - with null check
         if (tryResponse) {
           const upper = tryResponse.toUpperCase();
@@ -294,18 +311,21 @@ export class ProtocolManager {
           ) {
             // Give protocol time to initialize
             await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
-            
+
             // Send test command to verify actual communication
             const testResponse = await this.sendProtocolTestCommand();
-            if (testResponse && !isResponseError(testResponse)) {
+            if (testResponse && !this.isResponseError(testResponse)) {
               // Much more lenient test response validation
               const testUpper = testResponse.toUpperCase();
-              if (!testUpper.includes('ERROR') && 
-                  !testUpper.includes('UNABLE') &&
-                  !testUpper.includes('?')) {
-                
-                await log.info(`[ProtocolManager] Protocol ${protocolName} appears to be working`);
-                
+              if (
+                !testUpper.includes('ERROR') &&
+                !testUpper.includes('UNABLE') &&
+                !testUpper.includes('?')
+              ) {
+                await log.info(
+                  `[ProtocolManager] Protocol ${protocolName} appears to be working`,
+                );
+
                 // Set it permanently
                 const setCmd = `${ELM_COMMANDS.SET_PROTOCOL_PREFIX}${protocolNumHex}`;
                 await this.sendCommand(setCmd, 2000);
@@ -320,9 +340,10 @@ export class ProtocolManager {
           await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
           await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
         } catch {}
-
       } catch (error) {
-        await log.error(`[ProtocolManager] Error testing ${protocolName}`, { error });
+        await log.error(`[ProtocolManager] Error testing ${protocolName}`, {
+          error,
+        });
         try {
           await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
         } catch {}
@@ -448,5 +469,17 @@ export class ProtocolManager {
       );
       // Continue even if some settings fail?
     }
+  }
+
+  private extractProtocolNumber(response: string): number | null {
+    if (!response) return null;
+    const match = response.match(/[AP]\d+/);
+    return match ? parseInt(match[0].substring(1)) : null;
+  }
+
+  private isResponseError(response: string): boolean {
+    if (!response) return true;
+    const errorPatterns = ['ERROR', 'UNABLE TO CONNECT', 'NO DATA', 'CAN ERROR'];
+    return errorPatterns.some(pattern => response.toUpperCase().includes(pattern));
   }
 }

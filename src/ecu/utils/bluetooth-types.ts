@@ -16,7 +16,7 @@ export interface Device extends BlePeripheral {
 
 export interface UseBluetoothResult {
   // These parameters are part of the interface contract
-  // eslint-disable-next-line no-unused-vars
+
   sendCommand: (command: string, timeout?: number) => Promise<string>;
   error: Error | null;
   isAwaitingResponse: boolean;
@@ -32,7 +32,7 @@ export interface UseBluetoothResult {
 
 export interface BluetoothHookResult {
   // These parameters are part of the interface contract
-  // eslint-disable-next-line no-unused-vars
+
   sendCommand: (command: string, timeout?: number) => Promise<string | null>;
   isConnected: boolean;
   device: Device | null;

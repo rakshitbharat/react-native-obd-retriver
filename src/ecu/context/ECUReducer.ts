@@ -56,7 +56,7 @@ export const initialState: ECUState = {
     lastCommand: null,
     lastResponse: null,
     currentStep: 'IDLE',
-    command0100Attempts: 0,  // Add this field
+    command0100Attempts: 0, // Add this field
     maxCommand0100Attempts: 5, // Add this field
   },
   initializationState: {
@@ -140,14 +140,21 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
     }
 
     case ECUActionType.CONNECT_SUCCESS: {
-      const command = action.payload?.initCommand ?? action.payload?.command ?? null;
-      const response = action.payload?.initResponse ?? action.payload?.response ?? null;
+      const command =
+        action.payload?.initCommand ?? action.payload?.command ?? null;
+      const response =
+        action.payload?.initResponse ?? action.payload?.response ?? null;
 
       // Handle initialization command responses
-      if (command && ['ATZ', 'ATRV', 'ATE0', 'ATL0', 'ATS0', 'ATH0', 'ATAT0'].includes(command)) {
+      if (
+        command &&
+        ['ATZ', 'ATRV', 'ATE0', 'ATL0', 'ATS0', 'ATH0', 'ATAT0'].includes(
+          command,
+        )
+      ) {
         if (!response) {
           const attempts = state.initializationState.initAttempts + 1;
-          
+
           // Still have retry attempts left
           if (attempts < state.initializationState.maxInitAttempts) {
             return {
@@ -158,8 +165,8 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
                 ...state.initializationState,
                 initAttempts: attempts,
                 lastInitCommand: command,
-                lastInitResponse: response
-              }
+                lastInitResponse: response,
+              },
             };
           } else {
             // Max attempts reached for initialization
@@ -174,7 +181,10 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
 
       // Continue with existing success handling
       // Check if this success is part of the initial detection phase (e.g., response to '0100')
-      if (state.ecuDetectionState.inProgress && state.ecuDetectionState.lastCommand === '0100') {
+      if (
+        state.ecuDetectionState.inProgress &&
+        state.ecuDetectionState.lastCommand === '0100'
+      ) {
         const newState = {
           ...state,
           ecuDetectionState: {
@@ -186,7 +196,10 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         };
 
         // Check if the response indicates successful communication (example check)
-        if (response && (response.includes('41 00') || response.includes('7E8'))) {
+        if (
+          response &&
+          (response.includes('41 00') || response.includes('7E8'))
+        ) {
           // If successful, finalize connection state
           return {
             ...newState,
@@ -206,9 +219,14 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         } else {
           // If response is not valid for connection, consider it a failed attempt for this protocol/step
           const attempts = state.ecuDetectionState.searchAttempts + 1;
-          const attemptedProtocols = [...state.ecuDetectionState.protocolsAttempted];
+          const attemptedProtocols = [
+            ...state.ecuDetectionState.protocolsAttempted,
+          ];
           // Ensure protocol is a number before pushing
-          if (state.activeProtocol !== null && !attemptedProtocols.includes(state.activeProtocol as number)) {
+          if (
+            state.activeProtocol !== null &&
+            !attemptedProtocols.includes(state.activeProtocol as number)
+          ) {
             attemptedProtocols.push(state.activeProtocol as number);
           }
 
@@ -242,16 +260,28 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
 
       // General CONNECT_SUCCESS handling (e.g., after protocol negotiation)
       // Ensure we have essential info for a successful connection
-      if (!state.activeProtocol || !state.protocolName || state.detectedEcuAddresses.length === 0) {
+      if (
+        !state.activeProtocol ||
+        !state.protocolName ||
+        state.detectedEcuAddresses.length === 0
+      ) {
         // If essential info is missing, treat as failure despite CONNECT_SUCCESS action
         // This might happen if the connection process logic dispatches SUCCESS prematurely
         const attempts = state.ecuDetectionState.searchAttempts + 1; // Increment attempt count
-        const attemptedProtocols = [...state.ecuDetectionState.protocolsAttempted];
-        if (state.activeProtocol !== null && !attemptedProtocols.includes(state.activeProtocol as number)) {
+        const attemptedProtocols = [
+          ...state.ecuDetectionState.protocolsAttempted,
+        ];
+        if (
+          state.activeProtocol !== null &&
+          !attemptedProtocols.includes(state.activeProtocol as number)
+        ) {
           attemptedProtocols.push(state.activeProtocol);
         }
 
-        if (state.ecuDetectionState.inProgress && attempts < state.ecuDetectionState.maxSearchAttempts) {
+        if (
+          state.ecuDetectionState.inProgress &&
+          attempts < state.ecuDetectionState.maxSearchAttempts
+        ) {
           // Still in detection and have attempts left
           return {
             ...state,
@@ -270,7 +300,8 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
           return {
             ...initialState,
             status: ECUConnectionStatus.CONNECTION_FAILED,
-            lastError: 'Connection failed: Missing protocol or ECU information.',
+            lastError:
+              'Connection failed: Missing protocol or ECU information.',
             ecuDetectionState: {
               ...initialState.ecuDetectionState,
               maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
@@ -288,7 +319,7 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         selectedEcuAddress: state.detectedEcuAddresses[0] ?? null,
         detectedEcuAddresses: state.detectedEcuAddresses,
         lastError: null,
-        deviceVoltage: action.payload?.voltage ?? state.deviceVoltage,  // Now both are number | null
+        deviceVoltage: action.payload?.voltage ?? state.deviceVoltage, // Now both are number | null
         ecuDetectionState: {
           ...initialState.ecuDetectionState, // Reset detection state on final success
           maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
@@ -301,7 +332,7 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
     case ECUActionType.CONNECT_FAILURE: {
       const errorMsg = action.payload?.error ?? 'Unknown connection error';
       const command = action.payload?.initCommand;
-      
+
       // Handle initialization failures specifically
       if (command && ['ATZ', 'ATRV'].includes(command)) {
         const attempts = state.initializationState.initAttempts + 1;
@@ -313,12 +344,12 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
             initializationState: {
               ...state.initializationState,
               initAttempts: attempts,
-              lastInitCommand: command
-            }
+              lastInitCommand: command,
+            },
           };
         }
       }
-      
+
       // Check if we are still in the detection process
       if (state.ecuDetectionState.inProgress) {
         const attempts = state.ecuDetectionState.searchAttempts + 1;

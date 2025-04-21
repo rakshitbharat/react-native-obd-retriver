@@ -5,7 +5,7 @@ import {
   RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL,
-  PROTOCOL_TEST_COMMAND
+  PROTOCOL_TEST_COMMAND,
 } from '../utils/constants';
 import {
   isResponseError,
@@ -755,7 +755,9 @@ export class VINRetriever {
   public async retrieveVIN(): Promise<string | null> {
     // Add connection validation at start
     if (!this.sendCommand) {
-      void log.error(`[${this.constructor.name}] No valid command sender available`);
+      void log.error(
+        `[${this.constructor.name}] No valid command sender available`,
+      );
       return null;
     }
 
@@ -763,11 +765,15 @@ export class VINRetriever {
     try {
       const testResponse = await this.sendCommand(PROTOCOL_TEST_COMMAND, 2000);
       if (!testResponse || isResponseError(testResponse)) {
-        void log.error(`[${this.constructor.name}] Connection appears to be lost`);
+        void log.error(
+          `[${this.constructor.name}] Connection appears to be lost`,
+        );
         return null;
       }
     } catch (error) {
-      void log.error(`[${this.constructor.name}] Connection test failed`, { error });
+      void log.error(`[${this.constructor.name}] Connection test failed`, {
+        error,
+      });
       return null;
     }
 

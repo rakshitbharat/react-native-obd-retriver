@@ -72,6 +72,7 @@
     "react-native-beautiful-logs": "^1.0.8",
     "react-native-ble-manager": ">=10.1.3",
     "react-native-bluetooth-obd-manager": "^1.0.3",
+    "react-use-reducer-wth-redux": "^1.0.1",
     "text-encoding": "^0.7.0"
   },
   "devDependencies": {
