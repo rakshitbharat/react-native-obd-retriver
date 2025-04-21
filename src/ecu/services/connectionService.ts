@@ -371,22 +371,31 @@ export const connectToECU = async (
     // Use a reasonable timeout for ECU response
     const testResponse = await sendCommand(testCmd, 5000);
 
-    // Update test command validation to be more lenient
     if (testResponse) {
-      // Consider any response containing 7E8, 7E9, 7E0 (CAN IDs) or 41 (response code) as valid
       const cleaned = cleanResponse(testResponse).toUpperCase();
+      
+      // Check for valid response patterns
       const isValidResponse =
-        cleaned.includes('7E8') ||
-        cleaned.includes('7E9') ||
-        cleaned.includes('7E0') ||
-        cleaned.includes('41') ||
-        cleaned.includes('SEARCHING');
-
+        cleaned.includes('41') ||  // Standard response prefix
+        cleaned.includes('SEARCHING...41'); // Auto-detection response
+    
       if (isValidResponse) {
         await log.info(
           `[connectionService] Test command successful with response: ${cleaned}`,
         );
-        detectedEcus = extractEcuAddresses(testResponse);
+        
+        // Extract ECU address more reliably
+        if (cleaned.match(/^7E[0-9A-F][0-9A-F]/)) {
+          // For CAN responses starting with 7Ex
+          detectedEcus = [cleaned.substring(0, 3)];
+        } else {
+          // Try standard extraction for other formats
+          detectedEcus = extractEcuAddresses(cleaned);
+        }
+        
+        await log.debug(
+          `[connectionService] Detected ECU addresses: ${detectedEcus.join(', ')}`,
+        );
       }
     } else {
       await log.warn(
@@ -404,7 +413,7 @@ export const connectToECU = async (
   }
 
   await log.info(
-    `[connectionService] Connection established. Protocol: ${protocolName} (${protocol}), Voltage: ${adapterInfo.voltage}`,
+    `[connectionService] Connection established. Protocol: ${protocolName} (${protocol}), Voltage: ${adapterInfo.voltage}, ECUs: ${detectedEcus.join(', ')}`,
   );
 
   // Connection successful
@@ -413,7 +422,7 @@ export const connectToECU = async (
     protocol: protocol,
     protocolName: protocolName,
     voltage: adapterInfo.voltage,
-    detectedEcus: detectedEcus, // Include detected ECU addresses
+    detectedEcus: detectedEcus.length > 0 ? detectedEcus : ['7E8'], // Fallback to default if none detected
   };
 };
 
@@ -493,7 +502,7 @@ export const disconnectFromECU = async (
       { error: errorMsg },
     );
   }
-};
+}
 
 // ==========================================================================
 // --- NON-ECU FUNCTIONS (VIN, DTC, CLEAR, RAW DTC) ---

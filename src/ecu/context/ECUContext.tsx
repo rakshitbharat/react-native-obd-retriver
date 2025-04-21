@@ -233,12 +233,15 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
         const result = await connectToECU(sendCommand);
 
+        console.log('ECU Connection Result:', JSON.stringify(result, null, 2));
+
         if (result.success) {
           const payload: ECUActionPayload = {
             protocol: result.protocol ?? null,
             protocolName: result.protocolName ?? null,
             voltage: parseVoltage(result.voltage),
             detectedEcuAddresses: result.detectedEcus ?? [],
+            // No need for selectedEcuAddress in payload as reducer handles it
           };
 
           // Subscribe to store before dispatching
@@ -246,8 +249,11 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           const stateUpdatePromise = new Promise<void>(resolveUpdate => {
             unsubscribe = ecuStore.subscribe(() => {
               const currentState = ecuStore.getState();
-              if (currentState.status === ECUConnectionStatus.CONNECTED) {
-                unsubscribe();
+              if (
+                currentState.status === ECUConnectionStatus.CONNECTED &&
+                currentState.detectedEcuAddresses?.length > 0
+              ) {
+                unsubscribe?.();
                 resolveUpdate();
               }
             });
@@ -259,7 +265,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           await stateUpdatePromise;
           
           await log.info(
-            `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'})`,
+            `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses.join(', ')}`,
           );
           
           resolve(true);

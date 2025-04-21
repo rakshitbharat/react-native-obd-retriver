@@ -134,14 +134,16 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
     }
 
     case ECUActionType.CONNECT_SUCCESS: {
+      const ecuAddresses = action.payload?.detectedEcuAddresses ?? [];
+      
       return {
         ...state,
-        status: ECUConnectionStatus.CONNECTED, // Set this first
+        status: ECUConnectionStatus.CONNECTED,
         activeProtocol: action.payload?.protocol ?? null,
         protocolName: action.payload?.protocolName ?? null,
         deviceVoltage: action.payload?.voltage ?? state.deviceVoltage,
-        detectedEcuAddresses: action.payload?.detectedEcuAddresses ?? [],
-        selectedEcuAddress: action.payload?.detectedEcuAddresses?.[0] ?? null,
+        detectedEcuAddresses: ecuAddresses,
+        selectedEcuAddress: ecuAddresses[0] ?? null, // Set first ECU as selected
         lastError: null,
         ecuDetectionState: {
           ...initialState.ecuDetectionState,
