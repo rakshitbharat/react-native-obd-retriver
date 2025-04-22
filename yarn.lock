@@ -7568,6 +7568,13 @@ react-test-renderer@18.2.0:
     react-shallow-renderer "^16.15.0"
     scheduler "^0.23.0"
 
+react-use-reducer-wth-redux@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/react-use-reducer-wth-redux/-/react-use-reducer-wth-redux-1.0.1.tgz#c2d32d184d5f889e0595dd5010e923b4162d39be"
+  integrity sha512-LraansCGbXkqViqVSmrp0YSK+JhucOzReZOu6WwDeaEWCC4xFzZEmeJfVwXJXpLXHPYrPonDZJE482mc6tT/Iw==
+  dependencies:
+    use-sync-external-store "^1.2.0"
+
 react@*:
   version "19.1.0"
   resolved "https://registry.yarnpkg.com/react/-/react-19.1.0.tgz#926864b6c48da7627f004795d6cce50e90793b75"
@@ -8696,6 +8703,11 @@ url-parse@^1.5.3:
   dependencies:
     querystringify "^2.1.1"
     requires-port "^1.0.0"
+
+use-sync-external-store@^1.2.0:
+  version "1.5.0"
+  resolved "https://registry.yarnpkg.com/use-sync-external-store/-/use-sync-external-store-1.5.0.tgz#55122e2a3edd2a6c106174c27485e0fd59bcfca0"
+  integrity sha512-Rb46I4cGGVBmjamjphe8L/UnvJD+uPPtTkNvX5mZgqdbavhI4EbgIWJiIHXJ8bc/i9EQGPRh4DwEURJ552Do0A==
 
 util-deprecate@^1.0.1, util-deprecate@~1.0.1:
   version "1.0.2"

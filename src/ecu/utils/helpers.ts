@@ -1,7 +1,6 @@
 import { log } from '../../utils/logger'; // Use project logger
 
 import { RESPONSE_KEYWORDS, PROTOCOL } from './constants';
-import { hexToBytes, bytesToString } from './ecuUtils';
 
 /**
  * Cleans ELM327 response string more aggressively.
@@ -318,7 +317,38 @@ export const assembleMultiFrameResponse = (
 ): string => {
   if (!rawResponse) return '';
 
-  void log.debug(`[Helper:assemble] Input: ${rawResponse}`); // Use logger
+  void log.debug(`[Helper:assemble] Input: ${rawResponse}`);
+
+  // Remove prompt and clean whitespace
+  const cleanedResponse = rawResponse.replace(/[>\r\n\s]/g, '').toUpperCase();
+
+  // For CAN responses starting with 7E8 or 7E9
+  if (cleanedResponse.match(/^7E[89]/)) {
+    void log.debug(`[Helper:assemble] Detected CAN format response`);
+
+    // Parse frames with format 7Ex01... (where x is frame number)
+    const frames = cleanedResponse.match(/7E[89][0-9A-F]+/g) || [];
+    let assembledData = '';
+
+    for (const frame of frames) {
+      // Get length byte (after 7Ex)
+      const lengthHex = frame.substring(3, 4);
+      const length = parseInt(lengthHex, 16);
+
+      // Extract data portion (skip header and length)
+      if (!isNaN(length) && length > 0) {
+        const data = frame.substring(4, 4 + length * 2);
+        assembledData += data;
+        void log.debug(
+          `[Helper:assemble] Frame data: ${data} (length: ${length})`,
+        );
+      }
+    }
+
+    void log.debug(`[Helper:assemble] Assembled CAN data: ${assembledData}`);
+    return assembledData;
+  }
+
   // Split by newline or carriage return, filter empty lines
   const lines = rawResponse
     .split(/[\r\n]+/)
@@ -462,7 +492,7 @@ export const assembleMultiFrameResponse = (
     }
   }
 
-  void log.debug(`[Helper:assemble] Output: ${assembledData}`); // Use logger
+  void log.debug(`[Helper:assemble] Output: ${assembledData}`);
 
   return assembledData;
 };
@@ -478,122 +508,56 @@ export const parseVinFromResponse = (
 ): string | null => {
   if (!assembledHexData) return null;
 
-  void log.debug(`[Helper:parseVin] Input Hex: ${assembledHexData}`); // Use logger
+  void log.debug(`[Helper:parseVin] Input Hex: ${assembledHexData}`);
 
-  // Find the VIN response signature: Mode 49, PID 02 -> "4902"
-  // Also handle Mode 09 PID 02 -> "0902" (request echo or incorrect header setting)
-  // VIN data should follow this, often prefixed by a count byte (01 for VIN)
-  let vinSignatureIndex = assembledHexData.indexOf('4902');
-  let payloadStartIndex = -1;
+  // Remove any trailing prompts or whitespace
+  const cleanedHex = assembledHexData.replace(/[>\r\n\s]/g, '').toUpperCase();
 
-  if (vinSignatureIndex !== -1) {
-    // Check for the count byte '01' right after '4902'
-    if (
-      assembledHexData.substring(
-        vinSignatureIndex + 4,
-        vinSignatureIndex + 6,
-      ) === '01'
-    ) {
-      payloadStartIndex = vinSignatureIndex + 6; // Start after '490201'
-    } else {
-      // Fallback: Assume data starts right after '4902' if count byte is missing/different
-      payloadStartIndex = vinSignatureIndex + 4;
-      void log.warn(
-        `[Helper:parseVin] VIN response '4902' found, but not followed by expected count '01'. Assuming payload starts immediately after.`,
-      );
-    }
-  } else {
-    // Try Mode 09 signature
-    vinSignatureIndex = assembledHexData.indexOf('0902');
-    if (vinSignatureIndex !== -1) {
-      // Check for count byte '01'
-      if (
-        assembledHexData.substring(
-          vinSignatureIndex + 4,
-          vinSignatureIndex + 6,
-        ) === '01'
-      ) {
-        payloadStartIndex = vinSignatureIndex + 6; // Start after '090201'
-      } else {
-        payloadStartIndex = vinSignatureIndex + 4;
-        void log.warn(
-          `[Helper:parseVin] VIN response '0902' found, but not followed by expected count '01'. Assuming payload starts immediately after.`,
-        );
-      }
-    }
-  }
+  // For CAN responses, look for VIN data after service response (49 02 01)
+  const vinMatch = cleanedHex.match(/4902(01)?([0-9A-F]+)/);
 
-  if (payloadStartIndex === -1) {
+  if (!vinMatch) {
     void log.warn(
-      `[Helper:parseVin] VIN signature '4902' or '0902' not found. Cannot reliably parse VIN.`,
-      { data: assembledHexData },
+      `[Helper:parseVin] No VIN data pattern found in: ${cleanedHex}`,
     );
-    // Check if the *entire* response might be the VIN hex (unlikely but possible)
-    if (assembledHexData.length === 34) {
+    return null;
+  }
+
+  // Extract VIN data - skip service bytes and optional length byte
+  const vinHexData = vinMatch[2];
+  void log.debug(`[Helper:parseVin] Found VIN hex data: ${vinHexData}`);
+
+  if (vinHexData.length < 34) {
+    void log.warn(`[Helper:parseVin] VIN data too short: ${vinHexData}`);
+    return null;
+  }
+
+  // Convert hex to ASCII
+  let vin = '';
+  for (let i = 0; i < 34; i += 2) {
+    const hexPair = vinHexData.substring(i, i + 2);
+    const charCode = parseInt(hexPair, 16);
+    const char = String.fromCharCode(charCode);
+
+    if (/[A-HJ-NPR-Z0-9]/i.test(char)) {
+      vin += char;
+    } else {
       void log.warn(
-        `[Helper:parseVin] No signature found, but data length is 34 hex chars. Attempting to parse as VIN.`,
+        `[Helper:parseVin] Invalid VIN character (hex: ${hexPair}, ascii: ${char})`,
       );
-      payloadStartIndex = 0; // Try parsing the whole string
-    } else {
-      return null; // No signature and wrong length
     }
   }
 
-  const hexPayload = assembledHexData.substring(payloadStartIndex);
-
-  // Remove potential padding bytes (often 00 or FF at the end in CAN)
-  // Be less aggressive: only remove trailing 00s. FF might be valid in some contexts.
-  const cleanPayload = hexPayload.replace(/00+$/i, '');
-
-  if (cleanPayload.length === 0) {
-    void log.warn('[Helper:parseVin] VIN payload is empty after cleaning.'); // Use logger
-    return null;
+  // Validate final VIN
+  if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
+    void log.info(`[Helper:parseVin] Valid VIN found: ${vin}`);
+    return vin;
   }
 
-  // VIN should be 17 chars = 34 hex digits. If much longer, trim?
-  const expectedHexLength = 17 * 2;
-  // Only trim if significantly longer (e.g., > 40 hex chars), otherwise keep potentially partial VIN
-  const trimmedPayload =
-    cleanPayload.length > expectedHexLength + 6 // Allow some slack
-      ? cleanPayload.substring(0, expectedHexLength)
-      : cleanPayload;
-
-  try {
-    const bytes = hexToBytes(trimmedPayload);
-    const vin = bytesToString(bytes); // Use updated bytesToString
-
-    // Final check for VIN validity after decoding
-    // Remove any remaining non-alphanumeric chars just in case
-    const finalVin = vin.replace(/[^A-HJ-NPR-Z0-9]/gi, '');
-
-    void log.debug(
-      `[Helper:parseVin] Decoded VIN attempt: "${finalVin}" (Length: ${finalVin.length})`,
-    ); // Use logger
-
-    // Basic VIN validation (17 chars, specific alphanumeric set, no I, O, Q)
-    if (finalVin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(finalVin)) {
-      void log.debug(`[Helper:parseVin] Parsed VIN appears valid: ${finalVin}`); // Use logger
-      return finalVin;
-    } else if (finalVin.length > 5) {
-      // Return if reasonably long, even if not perfect 17
-      void log.warn(
-        `[Helper:parseVin] Parsed VIN "${finalVin}" has unexpected format/length (${finalVin.length}). Returning potentially incorrect value.`,
-      ); // Use logger
-      return finalVin; // Return potentially partial/incorrect VIN
-    } else {
-      void log.warn(
-        `[Helper:parseVin] Failed to decode a valid VIN from payload hex: ${trimmedPayload}`,
-      ); // Use logger
-      return null;
-    }
-  } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    void log.error(
-      `[Helper:parseVin] Error decoding VIN hex "${trimmedPayload}":`,
-      { error: errorMsg },
-    ); // Use logger
-    return null;
-  }
+  void log.warn(
+    `[Helper:parseVin] Invalid VIN format: ${vin} (length: ${vin.length})`,
+  );
+  return null;
 };
 
 /** Parses DTC codes from assembled OBD response data */

@@ -1,3 +1,4 @@
+import { type Peripheral } from 'react-native-ble-manager';
 import type { PROTOCOL, ECUConnectionStatus } from './constants';
 import type { RawDTCResponse } from '../retrievers/BaseDTCRetriever';
 
@@ -18,6 +19,9 @@ export const ECUActionType = {
   CONNECT_FAILURE: 'CONNECT_FAILURE',
   /** Indicates ECU disconnection (protocol closed) */
   DISCONNECT: 'DISCONNECT',
+  /** Indicates disconnection was successful */
+  DISCONNECT_SUCCESS: 'DISCONNECT_SUCCESS',
+  DEVICE_STATE_CHANGE: 'DEVICE_STATE_CHANGE',
   /** Updates ECU information like voltage */
   SET_ECU_INFO: 'SET_ECU_INFO', // Used for updating info like voltage
   /** Completely resets the ECU state */
@@ -48,7 +52,11 @@ export const ECUActionType = {
   FETCH_RAW_PERMANENT_DTCS_SUCCESS: 'FETCH_RAW_PERMANENT_DTCS_SUCCESS',
   /** Indicates raw DTC retrieval failed, with error info */
   FETCH_RAW_DTCS_FAILURE: 'FETCH_RAW_DTCS_FAILURE',
+  SYNC_STATE: 'SYNC_STATE' as const,
+  BLUETOOTH_STATE_CHANGE: 'BLUETOOTH_STATE_CHANGE',
 } as const;
+
+export type ECUActionTypes = (typeof ECUActionType)[keyof typeof ECUActionType];
 
 /**
  * Type definition for ECU actions passed to the reducer
@@ -56,35 +64,92 @@ export const ECUActionType = {
  * This represents the standard action object structure used throughout
  * the ECU state management system.
  */
+export interface ECUActionPayload {
+  protocol?: PROTOCOL | null;
+  protocolName?: string | null;
+  voltage?: number | null;
+  detectedEcuAddresses?: string[];
+  error?: string; // Single error field
+  initCommand?: string;
+  initResponse?: string;
+  command?: string;
+  response?: string;
+  data?: RawDTCResponse | null;
+  dtcs?: string[];
+  bluetoothState?: 'on' | 'off';
+  device?: {
+    connected: boolean;
+    services?: string[];
+    characteristics?: Array<{
+      service: string;
+      characteristic: string;
+    }>;
+  };
+}
+
+// Remove duplicate ECUAction type and combine into one
 export type ECUAction = {
-  /** The action type, used by the reducer to determine how to update state */
-  type: keyof typeof ECUActionType; // Use keys of the const object
-  /** Optional payload containing data related to the action */
-  payload?: ECUActionPayload; // Payload is optional
+  type: keyof typeof ECUActionType;
+  payload?: ECUActionPayload;
 };
 
+export interface ExtendedPeripheral extends Peripheral {
+  services?: Array<{ uuid: string }>;
+  characteristics?: Array<{
+    service: string;
+    characteristic: string;
+  }>;
+}
+
+export interface ECUState {
+  status: ECUConnectionStatus;
+  activeProtocol: PROTOCOL | null;
+  protocolName: string | null;
+  voltage: number | null;
+  deviceVoltage: number | null;
+  lastError: string | null;
+  device?: {
+    connected: boolean;
+    services?: string[];
+    characteristics?: Array<{
+      service: string;
+      characteristic: string;
+    }>;
+  };
+  detectedEcuAddresses?: string[];
+  selectedEcuAddress?: string | null;
+  currentDTCs: string[];
+  pendingDTCs: string[];
+  rawCurrentDTCs: RawDTCResponse | null;
+  rawPendingDTCs: RawDTCResponse | null;
+  rawPermanentDTCs: RawDTCResponse | null;
+  dtcLoading: boolean;
+  dtcClearing: boolean;
+  rawDTCLoading: boolean;
+  initializationState: {
+    initAttempts: number;
+    maxInitAttempts: number;
+    lastInitCommand?: string;
+  };
+  ecuDetectionState: {
+    inProgress: boolean;
+    searchAttempts: number;
+    maxSearchAttempts: number;
+    lastAttemptTime?: number;
+    currentStep?: string;
+  };
+  error?: string;
+}
+
 /**
- * Interface for the payload of ECU actions
- *
- * This interface defines all possible properties that can be included in
- * an action payload. Not all properties are relevant for all action types.
+ * Configuration for header format in protocols
  */
-export interface ECUActionPayload {
-  /** Protocol number (enum value or null) for CONNECT_SUCCESS action */
-  protocol?: PROTOCOL | null; // Protocol number (enum or null)
-  /** Human-readable protocol name for CONNECT_SUCCESS action */
-  protocolName?: string | null; // Descriptive name of the protocol
-  /** Array of detected ECU addresses (e.g., ["7E8", "7E9"]) for CONNECT_SUCCESS */
-  detectedEcuAddresses?: string[]; // Array of detected ECU addresses (headers)
-  /** Error message for failure actions */
-  error?: string; // Error message string
-  /** Battery voltage (e.g., "12.5V") for SET_ECU_INFO action */
-  voltage?: string | undefined | null; // Voltage string (e.g., "12.3V") or null/undefined
-  /** Raw DTC response data for raw DTC success actions */
-  data?: RawDTCResponse | null; // Payload for raw DTC data actions
-  // Add other potential payload fields if needed
-  /** Array of DTC codes for FETCH_DTCS_SUCCESS action */
-  dtcs?: string[] | null; // For FETCH_DTCS_SUCCESS potentially
+export interface HeaderFormatConfig {
+  type: '11bit' | '29bit';
+  format: 'CAN' | 'ISO' | 'KWP';
+  addressingMode: 'functional' | 'physical';
+  defaultTxHeader: string;
+  defaultRxHeader: string;
 }
 
 /**
@@ -222,7 +287,7 @@ export interface ECUContextValue {
    * }
    * ```
    */
-  // eslint-disable-next-line no-unused-vars
+
   clearDTCs: (skipVerification?: boolean) => Promise<boolean>;
 
   /**
@@ -295,86 +360,33 @@ export interface ECUContextValue {
    * ```
    */
   sendCommand: SendCommandFunction;
+  /**
+   * Sends a command to the OBD adapter and waits for a response
+   *
+   * This function is used for sending commands and receiving responses.
+   * It handles the command formatting and response parsing.
+   *
+   * @param command - The command string to send (e.g., "0100", "ATDPN")
+   * @param options - Optional timeout in ms or options object
+   * @returns Promise resolving to the response string or null on failure
+   * @example
+   * ```typescript
+   * const response = await sendCommand("0100");
+   * if (response) {
+   *   console.log(`Response: ${response}`);
+   * }
+   * ```
+   */
+  sendCommandWithResponse: SendCommandFunction;
 }
 
 /**
- * Interface describing the state managed by the ECU reducer
- *
- * This interface represents the complete state of the ECU connection
- * and all related data. It is updated by the reducer in response to
- * dispatched actions.
- *
- * @example
- * ```typescript
- * const { state } = useECU();
- *
- * if (state.status === ECUConnectionStatus.CONNECTED) {
- *   console.log(`Connected with protocol: ${state.protocolName}`);
- *   console.log(`Vehicle voltage: ${state.deviceVoltage}`);
- *
- *   if (state.currentDTCs?.length > 0) {
- *     console.log(`Found DTCs: ${state.currentDTCs.join(', ')}`);
- *   }
- * }
- * ```
+ * Type definition for the sendCommand function used throughout the ECU module
+ * Aligns with react-native-bluetooth-obd-manager hook's sendCommand signature
  */
-export interface ECUState {
-  /** Current connection status (CONNECTED, DISCONNECTED, CONNECTING, ERROR) */
-  status: ECUConnectionStatus;
-
-  /** Active OBD protocol number (null when disconnected) */
-  activeProtocol: PROTOCOL | null;
-
-  /** Human-readable name of the active protocol (e.g., "ISO 15765-4 CAN (11 bit ID, 500 kbaud)") */
-  protocolName: string | null;
-
-  /** Last recorded error message (null when no error) */
-  lastError: string | null;
-
-  /** Last read device voltage (e.g., "12.3V") */
-  deviceVoltage: string | null;
-
-  /** List of ECU addresses found during connection (e.g., ["7E8", "7E9"]) */
-  detectedEcuAddresses: string[];
-
-  /** Currently targeted ECU address for communication */
-  selectedEcuAddress: string | null;
-
-  // DTC related state (remains unchanged from initial definition)
-  /** Array of current/active DTC codes (Mode 03) or null if not fetched */
-  currentDTCs: string[] | null;
-
-  /** Array of pending DTC codes (Mode 07) or null if not fetched */
-  pendingDTCs: string[] | null;
-
-  /** Array of permanent DTC codes (Mode 0A) or null if not fetched */
-  permanentDTCs: string[] | null;
-
-  /** Whether DTCs are currently being fetched */
-  dtcLoading: boolean;
-
-  /** Whether DTCs are currently being cleared */
-  dtcClearing: boolean;
-
-  /** Raw response data for current DTCs (Mode 03) */
-  rawCurrentDTCs: RawDTCResponse | null;
-
-  /** Raw response data for pending DTCs (Mode 07) */
-  rawPendingDTCs: RawDTCResponse | null;
-
-  /** Raw response data for permanent DTCs (Mode 0A) */
-  rawPermanentDTCs: RawDTCResponse | null;
-
-  /** Whether raw DTCs are currently being fetched */
-  rawDTCLoading: boolean;
-}
-
-// Type definition for the sendCommand function used throughout the ECU module
-// Aligns with react-native-bluetooth-obd-manager hook's sendCommand signature
 export type SendCommandFunction = (
-  // eslint-disable-next-line no-unused-vars
   command: string,
-  // eslint-disable-next-line no-unused-vars
+
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
@@ -527,7 +539,7 @@ export interface CanProtocolConfig extends ProtocolTimingConfig {
    * @param fcHeader - Flow control header to use in commands
    * @returns Array of AT commands for flow control setup
    */
-  // eslint-disable-next-line no-unused-vars
+
   flowControlCommands: (fcHeader: string) => string[];
 }
 
@@ -846,84 +858,6 @@ export interface FlowControlConfig {
 }
 
 /**
- * Configuration for OBD communication header format
- *
- * This interface defines the header structure and addressing used
- * for communication with the vehicle's ECUs.
- *
- * @example
- * ```typescript
- * // Standard CAN 11-bit configuration
- * const can11bitConfig: HeaderFormatConfig = {
- *   type: '11bit',
- *   format: 'CAN',
- *   addressingMode: 'functional',
- *   defaultTxHeader: '7DF',     // Standard functional addressing
- *   defaultRxHeader: '7E8',     // Primary ECU response
- *   defaultFilter: '7E8',       // Only show responses from primary ECU
- *   defaultMask: 'FFF'          // Match exact header
- * };
- *
- * // Extended CAN 29-bit configuration
- * const can29bitConfig: HeaderFormatConfig = {
- *   type: '29bit',
- *   format: 'CAN',
- *   addressingMode: 'physical',
- *   defaultTxHeader: '18DB33F1', // ISO-TP physical addressing
- *   defaultRxHeader: '18DAF110', // ECM response header
- *   defaultFilter: '18DAF110'    // Only accept primary ECU
- * };
- * ```
- */
-export interface HeaderFormatConfig {
-  /**
-   * CAN ID type:
-   * - '11bit': Standard CAN identifier (11 bits)
-   * - '29bit': Extended CAN identifier (29 bits)
-   */
-  type?: '11bit' | '29bit';
-
-  /**
-   * Protocol format (informational)
-   * Indicates the protocol family
-   */
-  format?: 'CAN' | 'ISO' | 'KWP' | 'J1850' | 'OTHER';
-
-  /**
-   * Addressing mode (informational):
-   * - 'functional': Broadcast to all ECUs (e.g., 7DF for CAN)
-   * - 'physical': Target a specific ECU (e.g., 7E0 for engine ECU in CAN)
-   */
-  addressingMode?: 'physical' | 'functional';
-
-  /**
-   * Default header for outgoing messages
-   * For CAN 11-bit: typically '7DF' (functional) or '7E0' (physical)
-   * For CAN 29-bit: typically '18DB33F1' (functional) or '18DA10F1' (physical)
-   */
-  defaultTxHeader?: string;
-
-  /**
-   * Default header for incoming messages (response)
-   * For CAN 11-bit: typically '7E8' for primary ECU
-   * For CAN 29-bit: typically '18DAF110' for primary ECU
-   */
-  defaultRxHeader?: string;
-
-  /**
-   * Default CAN message filter
-   * Used with ATCF command to filter incoming messages
-   */
-  defaultFilter?: string;
-
-  /**
-   * Default CAN message mask
-   * Used with ATCM command to specify which bits in the filter are relevant
-   */
-  defaultMask?: string;
-}
-
-/**
  * Configuration for OBD-II service modes used by diagnostic functions
  *
  * This interface defines the parameters for a specific OBD-II service mode,
@@ -988,3 +922,8 @@ export interface ServiceMode {
    */
   timing?: Partial<TimingConfig>;
 }
+
+/**
+ * Helper type for state update promises
+ */
+export type StateUpdatePromise = Promise<void>;

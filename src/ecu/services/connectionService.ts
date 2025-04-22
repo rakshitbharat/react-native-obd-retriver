@@ -142,22 +142,21 @@ export const initializeAdapter = async (
   sendCommand: SendCommandFunction,
 ): Promise<boolean> => {
   await log.debug('[connectionService] Initializing adapter...');
-  // Basic sequence: Reset -> Echo Off -> Linefeeds Off -> Spaces Off
-  // Headers and Timing are usually set *after* protocol detection.
+
   const initCommands = [
-    // Reset device fully
     {
       cmd: ELM_COMMANDS.RESET,
       delay: DELAYS_MS.RESET,
       ignoreError: true,
       checkOk: false,
+      timeout: 3000, // Longer timeout for reset
     },
-    // Basic ELM settings for clean communication
     {
       cmd: ELM_COMMANDS.ECHO_OFF,
       delay: DELAYS_MS.INIT,
       ignoreError: false,
       checkOk: true,
+      timeout: 2000,
     },
     {
       cmd: ELM_COMMANDS.LINEFEEDS_OFF,
@@ -190,46 +189,58 @@ export const initializeAdapter = async (
     // { cmd: `${ELM_COMMANDS.SET_TIMEOUT}${defaultTimeoutHex}`, delay: DELAYS_MS.INIT, ignoreError: false, checkOk: true },
   ];
 
+  /**
+   * Helper function to check if response contains OK or variants
+   */
+  const isValidResponse = (response: string | null): boolean => {
+    if (!response) return false;
+
+    // Clean response by removing prompts, carriage returns, etc
+    const cleaned = response
+      .replace(/[\r\n>]/g, '')
+      .trim()
+      .toUpperCase();
+
+    // Check for common valid responses (case insensitive)
+    return [
+      'OK',
+      'ELM327',
+      'ATZ',
+      'ATE0OK',
+      'ATL0OK',
+      'ATS0OK',
+      'ATH0OK',
+      'ATAT0OK',
+    ].some(validResponse => cleaned.includes(validResponse));
+  };
+
   try {
-    for (const { cmd, delay: cmdDelay, ignoreError, checkOk } of initCommands) {
+    for (const {
+      cmd,
+      delay: cmdDelay,
+      ignoreError,
+      checkOk,
+      timeout,
+    } of initCommands) {
       await log.debug(`[connectionService] Sending init command: ${cmd}`);
-      const response = await sendCommand(cmd, 2000);
-      await delay(cmdDelay); // Wait after command
+      const response = await sendCommand(cmd, timeout);
+      await delay(cmdDelay);
 
       if (!ignoreError) {
-        // First, check for outright null response or explicit error keywords
         if (response === null || isResponseError(response)) {
           await log.error(
-            `[connectionService] Init command "${cmd}" failed (null response or error keyword). Response: ${response ?? 'null'}`,
+            `[connectionService] Init command "${cmd}" failed. Response: ${response ?? 'null'}`,
           );
           return false;
         }
 
-        // If checkOk is required, verify the response contains OK or is the special ATE0OK case
-        if (checkOk) {
-          const standardOk = isResponseOk(response); // Checks if 'OK' is present
-          // Specifically allow the 'ATE0OK' response for the ATE0 command
-          const isAte0Command = cmd === ELM_COMMANDS.ECHO_OFF;
-          const isAte0OkResponse = isAte0Command && response?.includes(cmd + RESPONSE_KEYWORDS.OK); // e.g., includes "ATE0OK"
-
-          // If standard OK check fails AND it's not the specific ATE0OK response AND it's not '?', then fail
-          if (!standardOk && !isAte0OkResponse && response?.trim() !== '?') {
-            await log.error(
-              `[connectionService] Init command "${cmd}" failed or returned unexpected response (expected 'OK' or variant). Response: ${response ?? 'null'}`,
-            );
-            return false;
-          }
-        }
-
-        // Handle '?' response (might be unsupported command, but allow continuation)
-        if (response?.trim() === '?') {
-          await log.warn(
-            `[connectionService] Init command "${cmd}" returned '?', possibly unsupported but continuing.`,
+        if (checkOk && !isValidResponse(response)) {
+          await log.error(
+            `[connectionService] Init command "${cmd}" failed validation. Response: ${response}`,
           );
+          return false;
         }
-        // If we reach here, the response is considered acceptable for this command
       } else {
-        // Log ignored responses for debugging if needed
         await log.debug(
           `[connectionService] Init command "${cmd}" response (errors ignored): ${response ?? 'null'}`,
         );
@@ -358,25 +369,31 @@ export const connectToECU = async (
     // Use a reasonable timeout for ECU response
     const testResponse = await sendCommand(testCmd, 5000);
 
-    if (testResponse && !isResponseError(testResponse)) {
-      // If the response is NO DATA, connection is likely still OK, just no PIDs supported
-      if (cleanResponse(testResponse).includes(RESPONSE_KEYWORDS.NO_DATA)) {
+    if (testResponse) {
+      const cleaned = cleanResponse(testResponse).toUpperCase();
+
+      // Check for valid response patterns
+      const isValidResponse =
+        cleaned.includes('41') || // Standard response prefix
+        cleaned.includes('SEARCHING...41'); // Auto-detection response
+
+      if (isValidResponse) {
         await log.info(
-          `[connectionService] Test command (${testCmd}) returned NO DATA. Connection likely OK, but no specific ECU response data.`,
+          `[connectionService] Test command successful with response: ${cleaned}`,
         );
-      } else {
-        // Extract ECU addresses from the response (might be single or multi-line)
-        detectedEcus = extractEcuAddresses(testResponse);
-        if (detectedEcus.length > 0) {
-          await log.info(
-            `[connectionService] Detected ECU addresses: ${detectedEcus.join(', ')}`,
-          );
+
+        // Extract ECU address more reliably
+        if (cleaned.match(/^7E[0-9A-F][0-9A-F]/)) {
+          // For CAN responses starting with 7Ex
+          detectedEcus = [cleaned.substring(0, 3)];
         } else {
-          await log.warn(
-            `[connectionService] Test command (${testCmd}) successful, but no specific ECU addresses extracted from response: ${testResponse}`,
-          );
-          // Connection is likely okay, but we couldn't identify specific ECUs
+          // Try standard extraction for other formats
+          detectedEcus = extractEcuAddresses(cleaned);
         }
+
+        await log.debug(
+          `[connectionService] Detected ECU addresses: ${detectedEcus.join(', ')}`,
+        );
       }
     } else {
       await log.warn(
@@ -394,7 +411,7 @@ export const connectToECU = async (
   }
 
   await log.info(
-    `[connectionService] Connection established. Protocol: ${protocolName} (${protocol}), Voltage: ${adapterInfo.voltage}`,
+    `[connectionService] Connection established. Protocol: ${protocolName} (${protocol}), Voltage: ${adapterInfo.voltage}, ECUs: ${detectedEcus.join(', ')}`,
   );
 
   // Connection successful
@@ -403,7 +420,7 @@ export const connectToECU = async (
     protocol: protocol,
     protocolName: protocolName,
     voltage: adapterInfo.voltage,
-    detectedEcus: detectedEcus, // Include detected ECU addresses
+    detectedEcus: detectedEcus.length > 0 ? detectedEcus : ['7E8'], // Fallback to default if none detected
   };
 };
 
@@ -473,16 +490,10 @@ export const disconnectFromECU = async (
     '[connectionService] Disconnecting from ECU (sending ATPC)...',
   );
   try {
-    // Send ATPC with a short timeout, response isn't critical
-    await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE, 1000);
+    // Send ATPC without timeout, let adapter handle timing
+    await sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
     await log.debug('[connectionService] Protocol close command (ATPC) sent.');
-    // Optional: Send ATZ for a full reset after closing?
-    // From ECUConnector.resetDevice - it also sends ATD and ATZ
-    // await sendCommand(ELM_COMMANDS.DEFAULTS, 1000);
-    // await sendCommand(ELM_COMMANDS.RESET, 1000);
-    // Just sending ATPC is usually sufficient for session cleanup.
   } catch (error: unknown) {
-    // Log warning, but don't throw, as disconnect should proceed regardless
     const errorMsg = error instanceof Error ? error.message : String(error);
     await log.warn(
       '[connectionService] Error sending protocol close command (ATPC) during disconnect:',
@@ -543,17 +554,19 @@ export const disconnectFromECU = async (
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
+  bluetoothSendCommandRawChunked: SendCommandFunction,
 ): Promise<string | null> => {
   await log.debug(
     '[connectionService] Attempting to retrieve VIN using VINRetriever...',
   );
-
   try {
     // Create an instance of the VINRetriever
-    const vinRetriever = new VINRetriever(sendCommand);
+    const vinRetriever = new VINRetriever(
+      sendCommand,
+      bluetoothSendCommandRawChunked,
+    );
 
     // Call the retriever's method to get the VIN
-    // This method handles configuration, sending '0902', flow control, retries, and parsing
     const vin = await vinRetriever.retrieveVIN();
 
     if (vin) {

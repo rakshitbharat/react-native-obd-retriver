@@ -1,5 +1,5 @@
 // Enums for clarity and type safety
-/* eslint-disable no-unused-vars */
+
 export enum ECUConnectionStatus {
   DISCONNECTED = 'DISCONNECTED',
   CONNECTING = 'CONNECTING',
@@ -15,7 +15,6 @@ export enum OBD_MODE {
   VEHICLE_INFO = '09', // For VIN, etc.
   CURRENT_DATA = '01', // For Live Data, PIDs
 }
-/* eslint-enable no-unused-vars */
 
 // Merge delays from OBDUtils.js DELAYS/STANDARD_DELAYS
 // Using values from DELAYS in OBDUtils.js where applicable
@@ -70,7 +69,7 @@ export const RESPONSE_KEYWORDS = {
 } as const;
 
 // Merge from OBDUtils.js PROT enum
-/* eslint-disable no-unused-vars */
+
 export enum PROTOCOL {
   AUTO = 0,
   SAE_J1850_PWM = 1, // J1850PWM
@@ -94,7 +93,6 @@ export enum PROTOCOL {
   ISO_15765_4_CAN_11BIT_250K_8 = 19, // (13 in JS)
   ISO_15765_4_CAN_29BIT_250K_8 = 20, // (14 in JS)
 }
-/* eslint-enable no-unused-vars */
 
 // Merge from OBDUtils.js PROT_DESCRIPTIONS
 export const PROTOCOL_DESCRIPTIONS: Record<number, string> = {

@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, View, ScrollView } from 'react-native';
 
 import type { RawDTCResponse } from '../ecu/retrievers/BaseDTCRetriever';
+import { Colors } from '../utils/colors';
 
 interface DTCRawDataViewerProps {
   title: string;
@@ -80,7 +81,7 @@ export const DTCRawDataViewer: React.FC<DTCRawDataViewerProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: Colors.GRAY_BG,
     borderRadius: 8,
     margin: 8,
     padding: 12,
@@ -104,13 +105,10 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     marginTop: 2,
     paddingHorizontal: 4,
-    backgroundColor: '#e8e8e8',
+    backgroundColor: Colors.DARK_GRAY_BG,
   },
   noData: {
     fontStyle: 'italic',
-    color: '#666',
-  },
-  errorText: {
-    color: 'red',
+    color: Colors.MUTED_TEXT,
   },
 });

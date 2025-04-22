@@ -16,6 +16,7 @@ import {
   LiveDataExample,
   VINRetrievalExample,
 } from './examples';
+import { Colors } from './utils/colors';
 
 import type { JSX } from 'react';
 
@@ -116,6 +117,6 @@ const styles = StyleSheet.create({
   },
   backButtonContainer: {
     padding: 10,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: Colors.LIGHT_BG,
   },
 });

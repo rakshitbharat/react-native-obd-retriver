@@ -5,15 +5,8 @@ import {
   PROTOCOL,
   PROTOCOL_DESCRIPTIONS,
   PROTOCOL_TRY_ORDER,
-  RESPONSE_KEYWORDS,
   STANDARD_PIDS, // Import standard PIDs
 } from '../utils/constants';
-import {
-  cleanResponse,
-  extractProtocolNumber,
-  isResponseError,
-  isResponseOk,
-} from '../utils/helpers';
 
 import type { SendCommandFunction } from '../utils/types';
 
@@ -105,7 +98,7 @@ export class ProtocolManager {
         ELM_COMMANDS.GET_PROTOCOL_NUM,
         2000,
       );
-      const protocolNum = extractProtocolNumber(response);
+      const protocolNum = this.extractProtocolNumber(response);
       if (protocolNum !== null) {
         await log.debug(
           `[ProtocolManager] Current protocol number: ${protocolNum}`,
@@ -127,39 +120,86 @@ export class ProtocolManager {
     }
   }
 
-  /**
-   * Detects and sets the appropriate OBD protocol for vehicle communication
-   *
-   * This method implements a sophisticated protocol detection strategy:
-   * 1. First attempts automatic protocol detection (ATSP0)
-   * 2. If auto-detection fails, tries each protocol in priority order
-   * 3. Verifies protocol viability with standard test commands
-   *
-   * The method handles all protocol negotiation details including:
-   * - Protocol-specific timing requirements
-   * - Verification of communication stability
-   * - Recovery from protocol errors
-   *
-   * Based on ElmProtocolHelper.tryAllProtocols and related methods.
-   *
-   * @returns Promise resolving to the detected protocol information, or null if detection failed
-   * @example
-   * ```typescript
-   * // Detect and set the appropriate protocol
-   * const protocolInfo = await protocolManager.detectAndSetProtocol();
-   *
-   * if (protocolInfo) {
-   *   console.log(`Detected protocol: ${protocolInfo.name} (${protocolInfo.protocol})`);
-   *
-   *   // Configure protocol-specific settings
-   *   await protocolManager.configureProtocolSettings(protocolInfo.protocol);
-   *
-   *   // Continue with ECU communication
-   * } else {
-   *   console.error("Failed to detect compatible protocol");
-   * }
-   * ```
-   */
+  private isValidProtocolResponse(response: string | null): boolean {
+    if (!response) return false;
+    const upper = response.toUpperCase().trim();
+
+    // More generous validation including initial response formats
+    return (
+      upper.includes('41') || // Standard OBD response
+      upper.includes('7E8') || // CAN ECU address
+      upper.includes('7E9') || // Additional CAN ECU
+      upper.includes('7E0') || // More CAN addresses
+      upper.includes('007F') || // Valid PID response pattern
+      upper.includes('7FFFFF') // Common response pattern for 0100
+    );
+  }
+
+  private async sendProtocolTestCommand(
+    maxRetries: number = 3,
+    timeout: number = 5000,
+  ): Promise<string | null> {
+    let attempts = 0;
+    let lastResponse: string | null = null;
+
+    while (attempts < maxRetries) {
+      const testResponse = await this.sendCommand(
+        PROTOCOL_TEST_COMMAND,
+        timeout,
+      );
+      lastResponse = testResponse;
+
+      if (!testResponse) {
+        attempts++;
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        continue;
+      }
+
+      const upper = testResponse.toUpperCase();
+
+      // If we get SEARCHING, wait longer and retry
+      if (upper.includes('SEARCHING')) {
+        await log.debug(
+          `[ProtocolManager] Got SEARCHING response on attempt ${attempts + 1}, retrying...`,
+        );
+        await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+        attempts++;
+        continue;
+      }
+
+      // Check for valid response patterns
+      if (this.isValidProtocolResponse(testResponse)) {
+        return testResponse;
+      }
+
+      // If we got an explicit error
+      if (
+        upper.includes('ERROR') ||
+        upper.includes('UNABLE') ||
+        upper.includes('?') ||
+        upper.includes('CAN ERROR')
+      ) {
+        return null;
+      }
+
+      attempts++;
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // If our last response was somewhat valid but didn't match strict criteria
+    if (
+      lastResponse &&
+      (lastResponse.includes('41') || lastResponse.includes('7F'))
+    ) {
+      return lastResponse;
+    }
+
+    await log.warn(
+      `[ProtocolManager] Test command failed after ${maxRetries} attempts`,
+    );
+    return null;
+  }
+
   async detectAndSetProtocol(): Promise<{
     protocol: PROTOCOL;
     name: string;
@@ -177,48 +217,46 @@ export class ProtocolManager {
       ); // Timeout for ATSP0
       await this.delay(DELAYS_MS.COMMAND_MEDIUM);
 
-      if (autoSetResponse && isResponseOk(autoSetResponse)) {
-        // Verify connection with a standard command
-        const verifyResponse = await this.sendCommand(
-          PROTOCOL_TEST_COMMAND,
-          5000,
-        ); // Timeout for 0100
-        await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+      // More liberal response validation helper
+      if (autoSetResponse) {
+        const upper = autoSetResponse
+          .toUpperCase()
+          .replace(/[\r\n>]/g, '')
+          .trim();
+        if (
+          upper.includes('OK') ||
+          upper.includes('ELM') ||
+          upper.includes('ATZ') ||
+          upper.includes('SEARCHING') ||
+          upper.includes('4100') ||
+          upper.includes('7E') ||
+          upper.includes('CONNECTING') ||
+          upper.includes('BUS')
+        ) {
+          await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2); // Double the delay for auto protocol
 
-        // Check if response is valid and not NO DATA (NO DATA is acceptable here if protocol set)
-        if (verifyResponse && !isResponseError(verifyResponse)) {
-          // Auto detect *might* have succeeded, now find out which protocol was chosen
-          const protocolNum = await this.getCurrentProtocolNumber();
-          if (protocolNum !== null && protocolNum !== PROTOCOL.AUTO) {
-            // Ensure it's not still 0
-            const protocolName =
-              PROTOCOL_DESCRIPTIONS[protocolNum] ?? `Protocol ${protocolNum}`;
-            await log.info(
-              `[ProtocolManager] Auto-detection successful. Protocol: ${protocolName} (${protocolNum})`,
-            );
-            // No need to set it again, ATSP0 already did.
-            return { protocol: protocolNum, name: protocolName };
-          } else {
-            await log.warn(
-              `[ProtocolManager] ATSP0 succeeded but failed to read back a specific protocol number or still reports AUTO. Response: ${verifyResponse}`,
-            );
+          const verifyResponse = await this.sendProtocolTestCommand(4, 8000); // More retries and longer timeout
+
+          if (verifyResponse) {
+            const protocolNum = await this.getCurrentProtocolNumber();
+            if (protocolNum !== null && protocolNum !== PROTOCOL.AUTO) {
+              await log.info(
+                `[ProtocolManager] Auto protocol verified with response: ${verifyResponse}`,
+              );
+              const protocolName =
+                PROTOCOL_DESCRIPTIONS[protocolNum] ?? `Protocol ${protocolNum}`;
+              return { protocol: protocolNum, name: protocolName };
+            }
           }
-        } else {
-          await log.debug(
-            `[ProtocolManager] ATSP0 verification failed or returned error/NO DATA. Response: ${verifyResponse ?? 'null'}`,
-          );
         }
-      } else {
-        await log.debug(
-          `[ProtocolManager] ATSP0 command failed or returned error. Response: ${autoSetResponse ?? 'null'}`,
-        );
       }
       // Close protocol if auto failed, before trying manual
       try {
         await log.debug(
           '[ProtocolManager] Closing protocol after failed auto-attempt (ATPC)...',
         );
-        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE, 1000);
+        // Remove timeout from ATPC command
+        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
         await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
       } catch {
         /* Ignore cleanup error */
@@ -232,7 +270,7 @@ export class ProtocolManager {
         await log.debug(
           '[ProtocolManager] Closing protocol after error during auto-attempt (ATPC)...',
         );
-        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE, 1000);
+        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
         await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
       } catch {
         /* Ignore cleanup error */
@@ -244,7 +282,6 @@ export class ProtocolManager {
       '[ProtocolManager] Auto-detect failed or inconclusive. Starting manual protocol testing...',
     );
     for (const protocol of PROTOCOL_TRY_ORDER) {
-      // Skip AUTO protocol in manual check
       if (Number(protocol) === PROTOCOL.AUTO) continue;
 
       const protocolNumHex = protocol.toString(16).toUpperCase();
@@ -255,96 +292,63 @@ export class ProtocolManager {
       );
 
       try {
-        // Try Protocol command (ATTP) - checks if protocol is usable
+        // Try Protocol command (ATTP)
         const tryCmd = `${ELM_COMMANDS.TRY_PROTOCOL_PREFIX}${protocolNumHex}`;
-        const tryResponse = await this.sendCommand(tryCmd, 10000); // Long timeout for ATTP
-        await this.delay(DELAYS_MS.COMMAND_MEDIUM); // Short delay after ATTP
+        const tryResponse = await this.sendCommand(tryCmd, 10000);
 
-        // Check if ATTP response is OK or Searching... (indicates protocol might work)
-        // Allow empty response after ATTP as potentially successful initiation
-        if (
-          tryResponse &&
-          (isResponseOk(tryResponse) ||
-            cleanResponse(tryResponse).includes(RESPONSE_KEYWORDS.SEARCHING) ||
-            tryResponse.trim() === '')
-        ) {
-          await log.debug(
-            `[ProtocolManager] ATTP${protocolNumHex} response suggests potential compatibility: ${tryResponse}`,
-          );
-
-          // Send a standard command to confirm communication with ECU
-          const testResponse = await this.sendCommand(
-            PROTOCOL_TEST_COMMAND,
-            5000,
-          ); // Standard timeout for 0100
-          await this.delay(DELAYS_MS.COMMAND_MEDIUM); // Short delay after test command
-
-          // Check if the test command was successful (valid response, not error, not NO DATA)
+        // More lenient response checking - with null check
+        if (tryResponse) {
+          const upper = tryResponse.toUpperCase();
           if (
-            testResponse &&
-            !isResponseError(testResponse) &&
-            !cleanResponse(testResponse).includes(RESPONSE_KEYWORDS.NO_DATA)
+            upper.includes('OK') ||
+            upper.includes('ELM') ||
+            upper.includes('ATZ') ||
+            upper.includes('SEARCHING') ||
+            upper.includes('4100') ||
+            upper.includes('7E') ||
+            upper.includes('CONNECTING') ||
+            upper.includes('BUS')
           ) {
-            // Protocol test succeeded! Now permanently set it using ATSP
-            await log.info(
-              `[ProtocolManager] Protocol ${protocolName} test successful! Setting permanently...`,
-            );
-            const setCommand = `${ELM_COMMANDS.SET_PROTOCOL_PREFIX}${protocolNumHex}`;
-            const setResponse = await this.sendCommand(setCommand, 2000); // Timeout for ATSP
-            await this.delay(DELAYS_MS.COMMAND_MEDIUM); // Short delay after ATSP
+            // Give protocol time to initialize
+            await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
 
-            if (setResponse && isResponseOk(setResponse)) {
-              // Final check: Verify the protocol number was actually set
-              const finalProtocolNum = await this.getCurrentProtocolNumber();
-              if (finalProtocolNum === protocol) {
+            // Send test command to verify actual communication
+            const testResponse = await this.sendProtocolTestCommand();
+            if (testResponse && !this.isResponseError(testResponse)) {
+              // Much more lenient test response validation
+              const testUpper = testResponse.toUpperCase();
+              if (
+                !testUpper.includes('ERROR') &&
+                !testUpper.includes('UNABLE') &&
+                !testUpper.includes('?')
+              ) {
                 await log.info(
-                  `[ProtocolManager] Successfully set and verified protocol: ${protocolName} (${protocol})`,
+                  `[ProtocolManager] Protocol ${protocolName} appears to be working`,
                 );
-                return { protocol, name: protocolName };
-              } else {
-                await log.warn(
-                  `[ProtocolManager] ATSP${protocolNumHex} reported OK, but ATDPN returned ${finalProtocolNum ?? 'null'}.`,
-                );
-                // Still consider it a success if ATSP said OK? Maybe. Let's return for now.
+
+                // Set it permanently
+                const setCmd = `${ELM_COMMANDS.SET_PROTOCOL_PREFIX}${protocolNumHex}`;
+                await this.sendCommand(setCmd, 2000);
                 return { protocol, name: protocolName };
               }
-            } else {
-              await log.warn(
-                `[ProtocolManager] Failed to set protocol ${protocolName} with ATSP. Response: ${setResponse ?? 'null'}`,
-              );
-              // Consider test successful even if ATSP fails, if ATTP + 0100 worked? Risky.
-              // Let's treat ATSP failure as protocol failure for robustness.
             }
-          } else {
-            await log.debug(
-              `[ProtocolManager] Protocol ${protocolName} test (${PROTOCOL_TEST_COMMAND}) failed or returned NO DATA. Response: ${testResponse ?? 'null'}`,
-            );
           }
-        } else {
-          await log.debug(
-            `[ProtocolManager] Protocol ${protocolName} not supported by adapter or vehicle (ATTP failed). Response: ${tryResponse ?? 'null'}`,
-          );
         }
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        await log.error(
-          `[ProtocolManager] Error testing protocol ${protocolName}:`,
-          { error: errorMsg },
-        );
-        // Ensure protocol is closed even if error occurred during test
-      } finally {
-        // Close the protocol before trying the next one
+
+        // Close protocol before trying next
         try {
-          await log.debug(
-            `[ProtocolManager] Closing protocol ${protocolName} attempt (ATPC)...`,
-          );
-          await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE, 1000);
-          await this.delay(DELAYS_MS.PROTOCOL_SWITCH); // Wait after closing
-        } catch {
-          /* Ignore cleanup error */
-        }
+          await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
+          await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
+        } catch {}
+      } catch (error) {
+        await log.error(`[ProtocolManager] Error testing ${protocolName}`, {
+          error,
+        });
+        try {
+          await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
+        } catch {}
       }
-    } // End of protocol loop
+    }
 
     await log.error(
       '[ProtocolManager] Protocol detection failed - No working protocol found after all attempts.',
@@ -465,5 +469,24 @@ export class ProtocolManager {
       );
       // Continue even if some settings fail?
     }
+  }
+
+  private extractProtocolNumber(response: string | null): number | null {
+    if (!response) return null;
+    const match = response.match(/[AP]\d+/);
+    return match ? parseInt(match[0].substring(1)) : null;
+  }
+
+  private isResponseError(response: string): boolean {
+    if (!response) return true;
+    const errorPatterns = [
+      'ERROR',
+      'UNABLE TO CONNECT',
+      'NO DATA',
+      'CAN ERROR',
+    ];
+    return errorPatterns.some(pattern =>
+      response.toUpperCase().includes(pattern),
+    );
   }
 }

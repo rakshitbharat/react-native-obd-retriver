@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Button, ScrollView } from 'react-native';
 
 import { useECU } from '../ecu/hooks/useECU';
 import { ECUConnectionStatus } from '../ecu/utils/constants';
+import { Colors } from '../utils/colors';
 
 import type { JSX } from 'react';
 
@@ -132,7 +133,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 16,
-    backgroundColor: '#fff',
+    backgroundColor: Colors.WHITE,
   },
   title: {
     fontSize: 20,
@@ -145,7 +146,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   infoContainer: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: Colors.GRAY_BG,
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
@@ -168,7 +169,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   vinContainer: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: Colors.GRAY_BG,
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
@@ -176,15 +177,14 @@ const styles = StyleSheet.create({
   vinValue: {
     fontFamily: 'monospace',
     padding: 8,
-    backgroundColor: '#e8e8e8',
-    borderRadius: 4,
+    backgroundColor: Colors.DARK_GRAY_BG,
   },
   noData: {
     fontStyle: 'italic',
-    color: '#666',
+    color: Colors.MUTED_TEXT,
   },
   errorText: {
-    color: 'red',
+    color: Colors.ERROR_TEXT,
     marginVertical: 8,
   },
   buttonsContainer: {

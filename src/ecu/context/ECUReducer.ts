@@ -1,5 +1,4 @@
-import { log } from '../../utils/logger';
-import { ECUConnectionStatus } from '../utils/constants';
+import { ECUConnectionStatus } from '../utils/constants'; // Import PROTOCOL if needed
 import { ECUActionType } from '../utils/types';
 
 import type { ECUAction, ECUState } from '../utils/types';
@@ -35,107 +34,153 @@ import type { ECUAction, ECUState } from '../utils/types';
  *    - dtcLoading: Whether DTCs are currently being retrieved
  *    - dtcClearing: Whether a DTC clear operation is in progress
  *    - rawDTCLoading: Whether raw DTC data is being retrieved
+ *
+ * 6. ECU Detection State:
+ *    - ecuDetectionState: Tracks the multi-step process of detecting ECUs and protocols.
  */
 export const initialState: ECUState = {
   status: ECUConnectionStatus.DISCONNECTED,
   activeProtocol: null,
-  protocolName: null, // Added
-  lastError: null,
+  protocolName: null,
+  voltage: null,
   deviceVoltage: null,
-  detectedEcuAddresses: [], // Added
-  selectedEcuAddress: null, // Added
-  // DTC related state remains unchanged
-  currentDTCs: null,
-  pendingDTCs: null,
-  permanentDTCs: null,
-  dtcLoading: false,
-  dtcClearing: false,
+  lastError: null,
+  currentDTCs: [],
+  pendingDTCs: [],
   rawCurrentDTCs: null,
   rawPendingDTCs: null,
   rawPermanentDTCs: null,
+  dtcLoading: false,
+  dtcClearing: false,
   rawDTCLoading: false,
+  initializationState: {
+    initAttempts: 0,
+    maxInitAttempts: 3,
+  },
+  ecuDetectionState: {
+    inProgress: false,
+    searchAttempts: 0,
+    maxSearchAttempts: 3,
+  },
 };
 
-/**
- * Reducer for ECU state management
- *
- * This reducer handles all state transitions for the ECU communication system,
- * processing various actions related to connection management, DTC operations,
- * and vehicle information retrieval.
- *
- * The reducer maintains immutability by creating new state objects for each action,
- * and implements careful error handling to ensure the application remains in a
- * consistent state even when operations fail.
- *
- * Action categories:
- *
- * 1. Connection actions:
- *    - CONNECT_START: Initiates ECU connection process
- *    - CONNECT_SUCCESS: Updates state with protocol and ECU information
- *    - CONNECT_FAILURE: Records connection errors
- *    - DISCONNECT: Resets state after disconnection
- *
- * 2. Information actions:
- *    - SET_ECU_INFO: Updates ECU metadata (voltage, etc.)
- *    - RESET: Performs complete state reset
- *
- * 3. DTC operations:
- *    - FETCH_DTCS_*: Manages parsed DTC retrieval state
- *    - CLEAR_DTCS_*: Handles DTC clearing operations
- *    - FETCH_RAW_DTCS_*: Manages raw DTC data retrieval
- *
- * Each action typically includes appropriate payload data that's carefully
- * extracted using nullish coalescing to ensure type safety and prevent runtime errors.
- *
- * @param state - Current ECU state
- * @param action - Action to process with optional payload
- * @returns New ECU state
- */
 export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
-  // Use void operator to mark promise as intentionally not awaited
-  void log.debug(`[ECUReducer] Action: ${action.type}`, {
-    payload: action.payload,
-  });
-
   switch (action.type) {
-    case ECUActionType.CONNECT_START:
+    case ECUActionType.CONNECT_START: {
       return {
-        ...initialState, // Reset state on new connection attempt
+        ...initialState,
         status: ECUConnectionStatus.CONNECTING,
-        // Keep previous voltage if available? Or reset fully? Resetting is safer for consistency.
-        // deviceVoltage: state.deviceVoltage, // Let's reset voltage too
-      };
-    case ECUActionType.CONNECT_SUCCESS: {
-      // Extract data from payload provided by ECUContext upon successful connection
-      const protocol = action.payload?.protocol ?? null; // Default to null if undefined
-      const protocolName = action.payload?.protocolName ?? null; // Default to null
-      const detectedEcus = action.payload?.detectedEcuAddresses ?? [];
-      const voltage = action.payload?.voltage ?? null; // Use new voltage or null
-
-      return {
-        ...state, // Keep existing DTC/rawDTC state if any
-        status: ECUConnectionStatus.CONNECTED,
-        activeProtocol: protocol,
-        protocolName: protocolName,
-        // Select the first detected ECU as default, or null if none detected
-        selectedEcuAddress: detectedEcus[0] ?? null,
-        detectedEcuAddresses: detectedEcus,
-        lastError: null, // Clear last error on success
-        deviceVoltage: voltage, // Update voltage
+        initializationState: {
+          ...initialState.initializationState,
+          initAttempts: 0,
+        },
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState,
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
+          inProgress: true,
+          lastAttemptTime: Date.now(),
+          currentStep: 'INIT',
+        },
       };
     }
-    case ECUActionType.CONNECT_FAILURE:
+
+    case ECUActionType.CONNECT_SUCCESS: {
+      const ecuAddresses = action.payload?.detectedEcuAddresses ?? [];
+
       return {
-        ...initialState, // Reset fully on failure
-        status: ECUConnectionStatus.CONNECTION_FAILED,
-        // Keep last error message
-        lastError: action.payload?.error ?? 'Unknown connection error',
+        ...state,
+        status: ECUConnectionStatus.CONNECTED,
+        activeProtocol: action.payload?.protocol ?? null,
+        protocolName: action.payload?.protocolName ?? null,
+        deviceVoltage: action.payload?.voltage ?? state.deviceVoltage,
+        detectedEcuAddresses: ecuAddresses,
+        selectedEcuAddress: ecuAddresses[0] ?? null, // Set first ECU as selected
+        lastError: null,
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState,
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
+          inProgress: false,
+          currentStep: 'COMPLETE',
+          lastAttemptTime: Date.now(),
+        },
       };
+    }
+
+    case ECUActionType.CONNECT_FAILURE: {
+      const errorMsg = action.payload?.error ?? 'Unknown connection error';
+      const command = action.payload?.initCommand;
+
+      // Handle initialization failures specifically
+      if (command && ['ATZ', 'ATRV'].includes(command)) {
+        const attempts = state.initializationState.initAttempts + 1;
+        if (attempts < state.initializationState.maxInitAttempts) {
+          return {
+            ...state,
+            status: ECUConnectionStatus.CONNECTING,
+            lastError: `Init command ${command} failed (attempt ${attempts})`,
+            initializationState: {
+              ...state.initializationState,
+              initAttempts: attempts,
+              lastInitCommand: command,
+            },
+          };
+        }
+      }
+
+      // Check if we are still in the detection process
+      if (state.ecuDetectionState.inProgress) {
+        const attempts = state.ecuDetectionState.searchAttempts + 1;
+        // Check if we can retry within the max attempts limit
+        if (attempts < state.ecuDetectionState.maxSearchAttempts) {
+          // Update state for retry: increment attempts, keep status CONNECTING
+          return {
+            ...state,
+            status: ECUConnectionStatus.CONNECTING, // Keep trying
+            lastError: `ECU detection attempt ${attempts} failed: ${errorMsg}`,
+            ecuDetectionState: {
+              ...state.ecuDetectionState,
+              searchAttempts: attempts,
+              lastAttemptTime: Date.now(),
+              currentStep: 'RETRY', // Indicate retry needed
+              // Optionally clear last command/response here if needed
+              // lastCommand: null,
+              // lastResponse: null,
+            },
+          };
+        } else {
+          // Max attempts reached, transition to final failure state
+          return {
+            ...initialState, // Reset most state
+            status: ECUConnectionStatus.CONNECTION_FAILED,
+            lastError: `Connection failed after ${attempts} attempts: ${errorMsg}`,
+            ecuDetectionState: {
+              ...initialState.ecuDetectionState, // Reset detection state fully
+              maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+            },
+          };
+        }
+      } else {
+        // If not in detection phase, it's a general connection failure outside the initial process
+        return {
+          ...initialState, // Reset fully on failure
+          status: ECUConnectionStatus.CONNECTION_FAILED,
+          lastError: errorMsg, // Keep last error message
+          ecuDetectionState: {
+            ...initialState.ecuDetectionState, // Reset detection state
+            maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+          },
+        };
+      }
+    }
     case ECUActionType.DISCONNECT:
       // Reset to initial state, perhaps keeping voltage for informational purposes?
       return {
         ...initialState,
         deviceVoltage: state.deviceVoltage, // Option: Keep last known voltage on disconnect
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState, // Reset detection state
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts, // Keep config
+        },
       };
     case ECUActionType.SET_ECU_INFO:
       // Update specific info like voltage without changing connection status
@@ -145,19 +190,26 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         deviceVoltage: action.payload?.voltage ?? state.deviceVoltage,
         // Can add other info updates here if needed
       };
-    case ECUActionType.RESET:
-      // Full reset to initial state
-      return initialState;
+    case ECUActionType.RESET: {
+      return {
+        ...initialState,
+        currentDTCs: [],
+        pendingDTCs: [],
+        // Keep other state parts intact or reset as necessary
+        ecuDetectionState: {
+          ...initialState.ecuDetectionState,
+          maxSearchAttempts: state.ecuDetectionState.maxSearchAttempts,
+        },
+      };
+    }
 
     // --- DTC related actions remain unchanged (as per requirement) ---
     case ECUActionType.FETCH_DTCS_START:
-      // Assuming this action is still needed for non-raw DTCs handled elsewhere
       return {
         ...state,
         dtcLoading: true,
-        currentDTCs: null,
-        pendingDTCs: null,
-        permanentDTCs: null,
+        currentDTCs: [],
+        pendingDTCs: [],
       };
     case ECUActionType.FETCH_DTCS_SUCCESS:
       // Assuming this action is still needed
@@ -178,17 +230,15 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
     case ECUActionType.CLEAR_DTCS_START:
       return { ...state, dtcClearing: true };
     case ECUActionType.CLEAR_DTCS_SUCCESS:
-      // Clear all DTC related states upon successful clear
       return {
         ...state,
         dtcClearing: false,
-        currentDTCs: [], // Reset parsed DTCs
+        currentDTCs: [],
         pendingDTCs: [],
-        permanentDTCs: [], // Clear permanent as well? Assuming Mode 04 might clear some types
-        rawCurrentDTCs: null, // Reset raw DTC data
+        rawCurrentDTCs: null,
         rawPendingDTCs: null,
         rawPermanentDTCs: null,
-        lastError: null, // Clear error on success
+        lastError: null,
       };
     case ECUActionType.CLEAR_DTCS_FAILURE:
       return {
@@ -204,19 +254,19 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
       return {
         ...state,
         rawDTCLoading: false,
-        rawCurrentDTCs: action.payload?.data ?? null,
+        rawCurrentDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_PENDING_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPendingDTCs: action.payload?.data ?? null,
+        rawPendingDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_PERMANENT_DTCS_SUCCESS:
       return {
         ...state,
         rawDTCLoading: false,
-        rawPermanentDTCs: action.payload?.data ?? null,
+        rawPermanentDTCs: action.payload?.data || null,
       };
     case ECUActionType.FETCH_RAW_DTCS_FAILURE:
       return {
@@ -225,13 +275,31 @@ export const ecuReducer = (state: ECUState, action: ECUAction): ECUState => {
         lastError: action.payload?.error ?? 'Failed to fetch raw DTCs',
       };
 
+    case ECUActionType.SYNC_STATE:
+      // Sync entire state from context
+      return action.payload as ECUState;
+
+    case ECUActionType.BLUETOOTH_STATE_CHANGE:
+      if (action.payload?.bluetoothState === 'off') {
+        return {
+          ...initialState,
+          status: ECUConnectionStatus.DISCONNECTED,
+          lastError: 'Bluetooth turned off',
+        };
+      }
+      return state;
+
+    case ECUActionType.DEVICE_STATE_CHANGE:
+      if (!action.payload?.device?.connected) {
+        return {
+          ...initialState,
+          status: ECUConnectionStatus.DISCONNECTED,
+          lastError: 'Device disconnected',
+        };
+      }
+      return state;
+
     default:
-      // Optional: Add exhaustive check for unhandled action types
-      // const exhaustiveCheck: never = action; // Uncomment for exhaustive checks
-      // If an unknown action type is received, log a warning and return current state
-      void log.warn(
-        `[ECUReducer] Received unknown action type: ${(action as ECUAction).type}`,
-      );
       return state;
   }
 };

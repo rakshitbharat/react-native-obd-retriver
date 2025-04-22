@@ -5,6 +5,7 @@ import { DTCRawDataViewer } from '../components/DTCRawDataViewer';
 import { useDTCRetriever } from '../ecu/hooks/useDTCRetriever';
 import { useECU } from '../ecu/hooks/useECU';
 import { ECUConnectionStatus } from '../ecu/utils/constants';
+import { Colors } from '../utils/colors';
 
 import type { RawDTCResponse } from '../ecu/retrievers/BaseDTCRetriever';
 import type { JSX } from 'react';
@@ -190,7 +191,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 16,
-    backgroundColor: '#fff',
+    backgroundColor: Colors.WHITE,
   },
   title: {
     fontSize: 20,
@@ -211,16 +212,16 @@ const styles = StyleSheet.create({
   errorContainer: {
     marginVertical: 8,
     padding: 8,
-    backgroundColor: '#ffeeee',
+    backgroundColor: Colors.ERROR_BG,
     borderRadius: 4,
   },
   errorText: {
-    color: 'red',
+    color: Colors.ERROR_TEXT,
   },
   loadingText: {
     marginVertical: 8,
     fontStyle: 'italic',
-    color: 'blue',
+    color: Colors.INFO_TEXT,
   },
   connectionButtons: {
     marginVertical: 12,

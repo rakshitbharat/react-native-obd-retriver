@@ -18,5 +18,5 @@ export const log = {
   },
   error: (message: string, ...args: unknown[]): void => {
     LogLib('error', '[ECU]', message, ...args);
-  }
+  },
 };
