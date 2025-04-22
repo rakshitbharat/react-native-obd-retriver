@@ -319,35 +319,37 @@ export const assembleMultiFrameResponse = (
   if (!rawResponse) return '';
 
   void log.debug(`[Helper:assemble] Input: ${rawResponse}`);
-  
+
   // Remove prompt and clean whitespace
   const cleanedResponse = rawResponse.replace(/[>\r\n\s]/g, '').toUpperCase();
-  
+
   // For CAN responses starting with 7E8 or 7E9
   if (cleanedResponse.match(/^7E[89]/)) {
     void log.debug(`[Helper:assemble] Detected CAN format response`);
-    
+
     // Parse frames with format 7Ex01... (where x is frame number)
     const frames = cleanedResponse.match(/7E[89][0-9A-F]+/g) || [];
     let assembledData = '';
-    
+
     for (const frame of frames) {
       // Get length byte (after 7Ex)
       const lengthHex = frame.substring(3, 4);
       const length = parseInt(lengthHex, 16);
-      
+
       // Extract data portion (skip header and length)
       if (!isNaN(length) && length > 0) {
-        const data = frame.substring(4, 4 + (length * 2));
+        const data = frame.substring(4, 4 + length * 2);
         assembledData += data;
-        void log.debug(`[Helper:assemble] Frame data: ${data} (length: ${length})`);
+        void log.debug(
+          `[Helper:assemble] Frame data: ${data} (length: ${length})`,
+        );
       }
     }
-    
+
     void log.debug(`[Helper:assemble] Assembled CAN data: ${assembledData}`);
     return assembledData;
   }
-  
+
   // Split by newline or carriage return, filter empty lines
   const lines = rawResponse
     .split(/[\r\n]+/)
@@ -514,9 +516,11 @@ export const parseVinFromResponse = (
 
   // For CAN responses, look for VIN data after service response (49 02 01)
   const vinMatch = cleanedHex.match(/4902(01)?([0-9A-F]+)/);
-  
+
   if (!vinMatch) {
-    void log.warn(`[Helper:parseVin] No VIN data pattern found in: ${cleanedHex}`);
+    void log.warn(
+      `[Helper:parseVin] No VIN data pattern found in: ${cleanedHex}`,
+    );
     return null;
   }
 
@@ -535,11 +539,13 @@ export const parseVinFromResponse = (
     const hexPair = vinHexData.substring(i, i + 2);
     const charCode = parseInt(hexPair, 16);
     const char = String.fromCharCode(charCode);
-    
+
     if (/[A-HJ-NPR-Z0-9]/i.test(char)) {
       vin += char;
     } else {
-      void log.warn(`[Helper:parseVin] Invalid VIN character (hex: ${hexPair}, ascii: ${char})`);
+      void log.warn(
+        `[Helper:parseVin] Invalid VIN character (hex: ${hexPair}, ascii: ${char})`,
+      );
     }
   }
 
@@ -549,7 +555,9 @@ export const parseVinFromResponse = (
     return vin;
   }
 
-  void log.warn(`[Helper:parseVin] Invalid VIN format: ${vin} (length: ${vin.length})`);
+  void log.warn(
+    `[Helper:parseVin] Invalid VIN format: ${vin} (length: ${vin.length})`,
+  );
   return null;
 };
 

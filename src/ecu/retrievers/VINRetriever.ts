@@ -115,7 +115,8 @@ export class VINRetriever {
   // Add ecuState property
   private readonly ecuState: ECUState;
 
-  constructor(sendCommand: SendCommandFunction,
+  constructor(
+    sendCommand: SendCommandFunction,
     bluetoothSendCommandRawChunked: SendCommandFunction,
   ) {
     this.sendCommand = sendCommand;
@@ -155,18 +156,18 @@ export class VINRetriever {
       setTimeout(resolve, ms);
     });
   }
- /**
+  /**
    * Configure adapter specifically for VIN retrieval.
    * Includes reset, basic settings, protocol detection, ECU header detection, and specific config.
    */
   private async _configureAdapterForVIN(): Promise<boolean> {
     void log.info('[VINRetriever] Configuring adapter for VIN retrieval...');
-    
+
     if (this.protocolState === PROTOCOL_STATES.READY) {
       void log.debug('[VINRetriever] Adapter already configured');
       return true;
     }
-    
+
     this.protocolState = PROTOCOL_STATES.CONFIGURING;
 
     try {
@@ -176,10 +177,10 @@ export class VINRetriever {
         { cmd: 'ATL0', delay: 100, desc: 'Linefeeds off' },
         { cmd: 'ATS0', delay: 100, desc: 'Spaces off' },
         { cmd: 'ATH1', delay: 100, desc: 'Headers on' },
-        { cmd: 'ATAT1', delay: 100, desc: 'Adaptive timing on' }
+        { cmd: 'ATAT1', delay: 100, desc: 'Adaptive timing on' },
       ];
 
-      for (const {cmd, delay, desc} of commands) {
+      for (const { cmd, delay, desc } of commands) {
         const response = await this.sendCommand(cmd);
         if (!response || isResponseError(response)) {
           void log.warn(`[VINRetriever] Failed to ${desc}: ${response}`);
@@ -192,7 +193,6 @@ export class VINRetriever {
 
       void log.info('[VINRetriever] Adapter configuration complete');
       return true;
-
     } catch (error) {
       void log.error('[VINRetriever] Configuration failed:', error);
       this.protocolState = PROTOCOL_STATES.ERROR;
@@ -327,14 +327,14 @@ export class VINRetriever {
 
   private processCanFrames(response: string): string {
     void log.debug('[VINRetriever] Processing CAN frames from:', response);
-    
+
     // Remove any terminators and clean the response
     const cleanResponse = response.replace(/[\r\n>]/g, '').toUpperCase();
-    
+
     // Split into individual frames and validate
     const frames = cleanResponse.match(/7E8[0-9A-F]+/g) || [];
     void log.debug('[VINRetriever] Found frames:', frames);
-    
+
     if (frames.length === 0) {
       void log.warn('[VINRetriever] No valid CAN frames found');
       return '';
@@ -344,7 +344,7 @@ export class VINRetriever {
     const combinedData = frames
       .map(frame => frame.substring(4)) // Remove 7E8 header
       .join('');
-      
+
     void log.debug('[VINRetriever] Combined frame data:', combinedData);
     return combinedData;
   }
@@ -352,7 +352,7 @@ export class VINRetriever {
   private extractVinFromHex(hexData: string): string | null {
     try {
       void log.debug('[VINRetriever] Extracting VIN from hex:', hexData);
-      
+
       // The response format should be: 49 02 01 [VIN DATA]
       // Remove the service and PID bytes (4902) and first byte (01)
       const vinStart = hexData.indexOf('490201');
@@ -360,11 +360,11 @@ export class VINRetriever {
         void log.warn('[VINRetriever] No VIN marker (490201) found');
         return null;
       }
-      
+
       // Get the VIN portion after 490201
       const vinHex = hexData.substring(vinStart + 6);
       void log.debug('[VINRetriever] VIN hex data:', vinHex);
-      
+
       // Convert hex to ASCII characters
       let vin = '';
       for (let i = 0; i < vinHex.length && vin.length < 17; i += 2) {
@@ -374,18 +374,17 @@ export class VINRetriever {
           vin += ascii;
         }
       }
-      
+
       void log.debug('[VINRetriever] Extracted VIN:', vin);
-      
+
       // Validate VIN format
       if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
         void log.info('[VINRetriever] Valid VIN found:', vin);
         return vin;
       }
-      
+
       void log.warn('[VINRetriever] Invalid VIN format:', vin);
       return null;
-
     } catch (error) {
       void log.error('[VINRetriever] Error extracting VIN:', error);
       return null;
@@ -409,7 +408,7 @@ export class VINRetriever {
 
         // Use bluetoothSendCommandRawChunked instead of regular sendCommand
         const response = await this.bluetoothSendCommandRawChunked('0902');
-        
+
         if (!response) {
           void log.warn('[VINRetriever] No response received');
           continue;
@@ -418,15 +417,15 @@ export class VINRetriever {
         // Convert raw chunks to hex string if needed
         let rawResponse: string;
         if (Array.isArray(response)) {
-          rawResponse = response.map(chunk => 
-            Buffer.from(chunk).toString('hex').toUpperCase()
-          ).join('');
+          rawResponse = response
+            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+            .join('');
         } else {
           rawResponse = response;
         }
 
         void log.debug('[VINRetriever] Raw response:', rawResponse);
-        
+
         // Process frames
         const processedData = this.processCanFrames(rawResponse);
         if (!processedData) {
@@ -438,9 +437,10 @@ export class VINRetriever {
         const vin = this.extractVinFromHex(processedData);
         if (vin) return vin;
 
-        void log.warn(`[VINRetriever] Attempt ${attempt} failed to find valid VIN`);
+        void log.warn(
+          `[VINRetriever] Attempt ${attempt} failed to find valid VIN`,
+        );
         await this.delay(DELAYS_MS.RETRY);
-
       } catch (error) {
         void log.error('[VINRetriever] Error:', error);
         if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);

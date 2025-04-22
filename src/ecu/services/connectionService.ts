@@ -561,7 +561,10 @@ export const getVehicleVIN = async (
   );
   try {
     // Create an instance of the VINRetriever
-    const vinRetriever = new VINRetriever(sendCommand, bluetoothSendCommandRawChunked);
+    const vinRetriever = new VINRetriever(
+      sendCommand,
+      bluetoothSendCommandRawChunked,
+    );
 
     // Call the retriever's method to get the VIN
     const vin = await vinRetriever.retrieveVIN();
