@@ -10,7 +10,7 @@ import { isResponseError } from '../utils/helpers';
 
 import type { ECUState } from '../utils/types';
 import type { ServiceMode } from './types';
-import type { SendCommandFunction } from '../utils/types';
+import type { SendCommandFunction, ChunkedResponse } from '../utils/types';
 
 // Protocol/State constants needed internally, mirroring BaseDTCRetriever
 const PROTOCOL_TYPES = {
@@ -98,7 +98,10 @@ export class VINRetriever {
 
   // Injected dependencies
   private readonly sendCommand: SendCommandFunction;
-  private readonly bluetoothSendCommandRawChunked: SendCommandFunction;
+  private readonly bluetoothSendCommandRawChunked: (
+    command: string,
+    timeout?: number | { timeout?: number },
+  ) => Promise<ChunkedResponse>;
 
   // Internal state
   private readonly mode: string = VINRetriever.SERVICE_MODE.REQUEST;
@@ -116,7 +119,10 @@ export class VINRetriever {
 
   constructor(
     sendCommand: SendCommandFunction,
-    bluetoothSendCommandRawChunked: SendCommandFunction,
+    bluetoothSendCommandRawChunked: (
+      command: string,
+      timeout?: number | { timeout?: number },
+    ) => Promise<ChunkedResponse>,
   ) {
     this.sendCommand = sendCommand;
     this.bluetoothSendCommandRawChunked = bluetoothSendCommandRawChunked;

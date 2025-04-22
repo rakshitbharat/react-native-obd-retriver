@@ -390,8 +390,20 @@ export type SendCommandFunction = (
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
-// --- Types below define configuration structures - derived from JS ElmProtocolInit/Helper ---
-// --- Kept for potential future protocol detail implementation ---
+/**
+ * Interface representing chunked Bluetooth response data.
+ * Each element in the array represents a distinct data packet received.
+ */
+export interface ChunkedResponse {
+  /** Array of raw data chunks */
+  chunks: Uint8Array[];
+  /** Total number of bytes received */
+  totalBytes: number;
+  /** Original command that was sent */
+  command: string;
+  /** Optional raw numeric response data */
+  rawResponse?: number[][];
+}
 
 /**
  * Configuration for adaptive timing in OBD communication
