@@ -20,7 +20,11 @@ import {
   parseDtcsFromResponse,
 } from '../utils/helpers';
 
-import type { SendCommandFunction, RawDTCResponse } from '../utils/types';
+import type {
+  SendCommandFunction,
+  RawDTCResponse,
+  ChunkedResponse,
+} from '../utils/types';
 
 /**
  * Result type for ECU connection attempt
@@ -559,17 +563,17 @@ export const disconnectFromECU = async (
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
-  bluetoothSendCommandRawChunked: SendCommandFunction,
+  sendCommandRawChunked: (
+    command: string,
+    timeout?: number | { timeout?: number },
+  ) => Promise<ChunkedResponse>,
 ): Promise<string | null> => {
   await log.debug(
     '[connectionService] Attempting to retrieve VIN using VINRetriever...',
   );
   try {
-    // Create an instance of the VINRetriever
-    const vinRetriever = new VINRetriever(
-      sendCommand,
-      bluetoothSendCommandRawChunked,
-    );
+    // Create VINRetriever instance with both command functions
+    const vinRetriever = new VINRetriever(sendCommand, sendCommandRawChunked);
 
     // Call the retriever's method to get the VIN
     const vin = await vinRetriever.retrieveVIN();

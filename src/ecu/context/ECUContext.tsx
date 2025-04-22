@@ -33,6 +33,7 @@ import type {
   ECUContextValue,
   RawDTCResponse,
   SendCommandFunction,
+  ChunkedResponse,
   ECUActionPayload,
 } from '../utils/types';
 import {
@@ -229,28 +230,42 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
     async (
       command: string,
       timeout?: number | { timeout?: number },
-    ): Promise<string | null> => {
-      // Check Bluetooth connection status before sending
+    ): Promise<ChunkedResponse> => {
       if (!isBluetoothConnected || !bluetoothSendCommandRawChunked) {
         await log.warn(
-          '[ECUContext] Attempted to send command while Bluetooth disconnected or command function unavailable:',
+          '[ECUContext] Attempted to send chunked command while Bluetooth disconnected or command function unavailable:',
           { command },
         );
-        // Return null to indicate failure as per SendCommandFunction type
-        return null;
+        throw new Error('Bluetooth not connected or function unavailable');
       }
+
       try {
         await log.debug(
           `[ECUContext] Sending raw chunked command via BT hook: ${command}`,
           { timeout },
         );
-        // Pass timeout if provided
-        const response = await bluetoothSendCommandRawChunked(
+
+        const rawResponse = await bluetoothSendCommandRawChunked(
           command,
-          // Adapt timeout format for the library
           typeof timeout === 'number' ? { timeout } : timeout,
         );
-        return response.toString(); // Convert ChunkedResponse to string
+
+        // Create proper ChunkedResponse object
+        const response: ChunkedResponse = {
+          chunks: rawResponse.chunks,
+          totalBytes: rawResponse.chunks.reduce(
+            (acc, chunk) => acc + chunk.length,
+            0,
+          ),
+          command,
+        };
+
+        await log.debug(
+          `[ECUContext] Received chunked response for "${command}": ${response.chunks.length} chunks`,
+          { totalBytes: response.totalBytes },
+        );
+
+        return response;
       } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -261,10 +276,10 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
             stack: error instanceof Error ? error.stack : undefined,
           },
         );
-        return null;
+        throw error;
       }
     },
-    [isBluetoothConnected, bluetoothSendCommandRawChunked], // Dependencies: BT connection status and the BT send function
+    [isBluetoothConnected, bluetoothSendCommandRawChunked],
   );
 
   // --- Core ECU Connection Logic ---
@@ -505,7 +520,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
     [sendCommand, state.status],
   );
 
-  // Update context value (remove dependencies that are no longer callbacks)
+  // Update useMemo dependencies
   const contextValue = useMemo<ECUContextValue>(
     () => ({
       state,
@@ -521,7 +536,19 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       sendCommand,
       sendCommandWithResponse: sendCommand,
     }),
-    [state, connectWithECU, disconnectFromECU, clearDTCs, sendCommand],
+    [
+      state,
+      connectWithECU,
+      disconnectFromECU,
+      clearDTCs,
+      getVIN,
+      getRawCurrentDTCs,
+      getRawPendingDTCs,
+      getRawPermanentDTCs,
+      getECUInformation,
+      getActiveProtocol,
+      sendCommand,
+    ],
   );
 
   return (

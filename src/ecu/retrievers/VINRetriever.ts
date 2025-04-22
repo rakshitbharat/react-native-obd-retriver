@@ -1,12 +1,12 @@
 import { log } from '../../utils/logger';
 import { ecuStore } from '../context/ECUStore';
+import { parseVinFromResponse, isResponseError } from '../utils/helpers';
 import {
   DELAYS_MS,
   STANDARD_PIDS,
   PROTOCOL,
   ECUConnectionStatus,
 } from '../utils/constants';
-import { isResponseError } from '../utils/helpers';
 
 import type { ECUState } from '../utils/types';
 import type { ServiceMode } from './types';
@@ -455,35 +455,28 @@ export class VINRetriever {
         await this._configureAdapterForVIN();
 
         // Use bluetoothSendCommandRawChunked instead of regular sendCommand
-        const response = await this.bluetoothSendCommandRawChunked('0902');
+        const response = await this.bluetoothSendCommandRawChunked('0902', {
+          timeout: VINRetriever.DATA_TIMEOUT,
+        });
 
-        if (!response) {
-          void log.warn('[VINRetriever] No response received');
-          continue;
+        // Convert chunks to string response
+        const decoder = new TextDecoder();
+        const stringResponse = response.chunks
+          .map(chunk => decoder.decode(chunk))
+          .join('');
+
+        if (!stringResponse) {
+          void log.warn(`[VINRetriever] Empty response on attempt ${attempt}`);
+          return null;
         }
 
-        // Convert raw chunks to hex string if needed
-        let rawResponse: string;
-        if (Array.isArray(response)) {
-          rawResponse = response
-            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
-            .join('');
-        } else {
-          rawResponse = response;
+        // Use helper to parse VIN from combined response
+        const vin = parseVinFromResponse(stringResponse);
+
+        if (vin) {
+          void log.info(`[VINRetriever] VIN retrieved successfully: ${vin}`);
+          return vin;
         }
-
-        void log.debug('[VINRetriever] Raw response:', rawResponse);
-
-        // Process frames
-        const processedData = this.processCanFrames(rawResponse);
-        if (!processedData) {
-          void log.warn('[VINRetriever] No valid data after processing frames');
-          continue;
-        }
-
-        // Extract VIN
-        const vin = this.extractVinFromHex(processedData);
-        if (vin) return vin;
 
         void log.warn(
           `[VINRetriever] Attempt ${attempt} failed to find valid VIN`,

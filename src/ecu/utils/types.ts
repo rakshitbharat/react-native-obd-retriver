@@ -397,12 +397,10 @@ export type SendCommandFunction = (
 export interface ChunkedResponse {
   /** Array of raw data chunks */
   chunks: Uint8Array[];
-  /** Total number of bytes received */
+  /** Total number of bytes across all chunks */
   totalBytes: number;
-  /** Original command that was sent */
+  /** Original command that generated this response */
   command: string;
-  /** Optional raw numeric response data */
-  rawResponse?: number[][];
 }
 
 /**
