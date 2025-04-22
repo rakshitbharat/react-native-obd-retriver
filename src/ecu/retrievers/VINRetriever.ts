@@ -170,24 +170,67 @@ export class VINRetriever {
     this.protocolState = PROTOCOL_STATES.CONFIGURING;
 
     try {
-      // Basic configuration commands
+      // Reset adapter first
+      await this.sendCommand('ATZ');
+      await this.delay(1000); // Longer delay after reset
+
+      // Basic configuration commands with better validation
       const commands = [
-        { cmd: 'ATE0', delay: 100, desc: 'Echo off' },
-        { cmd: 'ATL0', delay: 100, desc: 'Linefeeds off' },
-        { cmd: 'ATS0', delay: 100, desc: 'Spaces off' },
-        { cmd: 'ATH1', delay: 100, desc: 'Headers on' },
-        { cmd: 'ATAT1', delay: 100, desc: 'Adaptive timing on' },
+        {
+          cmd: 'ATE0',
+          delay: 200,
+          desc: 'Echo off',
+          validate: (resp: string) =>
+            resp.includes('OK') || resp.includes('ATE0'),
+        },
+        {
+          cmd: 'ATL0',
+          delay: 100,
+          desc: 'Linefeeds off',
+          validate: (resp: string) =>
+            resp.includes('OK') || resp.includes('ATL0'),
+        },
+        {
+          cmd: 'ATS0',
+          delay: 100,
+          desc: 'Spaces off',
+          validate: (resp: string) =>
+            resp.includes('OK') || resp.includes('ATS0'),
+        },
+        {
+          cmd: 'ATH1',
+          delay: 100,
+          desc: 'Headers on',
+          validate: (resp: string) =>
+            resp.includes('OK') || resp.includes('ATH1'),
+        },
+        {
+          cmd: 'ATAT1',
+          delay: 100,
+          desc: 'Adaptive timing on',
+          validate: (resp: string) =>
+            resp.includes('OK') || resp.includes('ATAT1'),
+        },
       ];
 
-      for (const { cmd, delay, desc } of commands) {
+      for (const { cmd, delay, desc, validate } of commands) {
         const response = await this.sendCommand(cmd);
-        if (!response || isResponseError(response)) {
-          void log.warn(`[VINRetriever] Failed to ${desc}: ${response}`);
+        if (!response || (!validate(response) && !isResponseError(response))) {
+          void log.warn(`[VINRetriever] ${desc} returned: ${response}`);
           if (cmd === 'ATH1') {
             throw new Error('Headers must be enabled for VIN retrieval');
           }
         }
         await this.delay(delay);
+      }
+
+      // Verify communication
+      const testResponse = await this.sendCommand('ATI');
+      if (!testResponse || isResponseError(testResponse)) {
+        void log.warn(
+          `[VINRetriever] Communication test failed: ${testResponse}`,
+        );
+        throw new Error('Communication test failed');
       }
 
       void log.info('[VINRetriever] Adapter configuration complete');

@@ -35,7 +35,7 @@ import type {
   SendCommandFunction,
   ECUActionPayload,
 } from '../utils/types';
-import { ecuStore } from './ECUStore';
+import { ecuStore, getStore, waitForStateCondition, storeConditions } from './ECUStore';
 
 /**
  * React Context for ECU communication
@@ -294,29 +294,12 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
         // Wait for store update with timeout
         try {
-          await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              reject(new Error('Store update timeout'));
-            }, 5000); // 5 second timeout
-
-            const unsubscribe = ecuStore.subscribe(() => {
-              const currentState = ecuStore.getState();
-              if (
-                currentState.status === ECUConnectionStatus.CONNECTED &&
-                (currentState.detectedEcuAddresses?.length ?? 0) > 0
-              ) {
-                clearTimeout(timeout);
-                unsubscribe();
-                resolve();
-              }
-            });
-          });
+          await waitForStateCondition(storeConditions.isConnectedWithECUs);
         } catch (timeoutError) {
           await log.warn(
             '[ECUContext] Store update timed out, but connection was successful',
             timeoutError,
           );
-          // Continue anyway since the initial connection was successful
         }
 
         await log.info(
@@ -378,9 +361,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   }, [state.status, dispatch]); // Depends on sendCommand and ECU state
 
   // --- Information Retrieval ---
-  const getECUInformation = useCallback(async (): Promise<void> => {
-    // Check ECU connection status from our state
-    if (state.status !== ECUConnectionStatus.CONNECTED) {
+  const getECUInformation = async (): Promise<void> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get ECU info: Not connected to ECU.');
       return;
     }
@@ -411,81 +394,80 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         error: errorMsg,
       });
     }
-  }, [sendCommand, state.status, dispatch]); // Depends on sendCommand and ECU state
+  };
 
   // --- Get Active Protocol ---
-  const getActiveProtocol = useCallback((): {
+  const getActiveProtocol = (): {
     protocol: PROTOCOL | null;
     name: string | null;
   } => {
-    // Directly return from state
+    const currentState = getStore();
     return {
-      protocol: state.activeProtocol,
-      name: state.protocolName,
+      protocol: currentState.activeProtocol,
+      name: currentState.protocolName,
     };
-  }, [state.activeProtocol, state.protocolName]); // Depends only on state
+  };
 
-  // Only keep raw DTC getter implementations
-  const getRawCurrentDTCs =
-    useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
-        await log.warn(
-          '[ECUContext] Cannot get raw current DTCs: Not connected to ECU.',
-        );
-        return null;
-      }
-      try {
-        return await getRawDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
-      } catch (error: unknown) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        await log.error('[ECUContext] Failed to get raw current DTCs:', {
-          error: errorMsg,
-        });
-        return null;
-      }
-    }, [sendCommand, state.status]);
+  const getRawCurrentDTCs = async (): Promise<RawDTCResponse | null> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+      await log.warn(
+        '[ECUContext] Cannot get raw current DTCs: Not connected to ECU.',
+      );
+      return null;
+    }
+    try {
+      return await getRawDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await log.error('[ECUContext] Failed to get raw current DTCs:', {
+        error: errorMsg,
+      });
+      return null;
+    }
+  };
 
-  const getRawPendingDTCs =
-    useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
-        await log.warn(
-          '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU.',
-        );
-        return null;
-      }
-      try {
-        return await getRawDTCs(sendCommand, OBD_MODE.PENDING_DTC);
-      } catch (error: unknown) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        await log.error('[ECUContext] Failed to get raw pending DTCs:', {
-          error: errorMsg,
-        });
-        return null;
-      }
-    }, [sendCommand, state.status]);
+  const getRawPendingDTCs = async (): Promise<RawDTCResponse | null> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+      await log.warn(
+        '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU.',
+      );
+      return null;
+    }
+    try {
+      return await getRawDTCs(sendCommand, OBD_MODE.PENDING_DTC);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await log.error('[ECUContext] Failed to get raw pending DTCs:', {
+        error: errorMsg,
+      });
+      return null;
+    }
+  };
 
-  const getRawPermanentDTCs =
-    useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
-        await log.warn(
-          '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU.',
-        );
-        return null;
-      }
-      try {
-        return await getRawDTCs(sendCommand, OBD_MODE.PERMANENT_DTC);
-      } catch (error: unknown) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        await log.error('[ECUContext] Failed to get raw permanent DTCs:', {
-          error: errorMsg,
-        });
-        return null;
-      }
-    }, [sendCommand, state.status]);
+  const getRawPermanentDTCs = async (): Promise<RawDTCResponse | null> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+      await log.warn(
+        '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU.',
+      );
+      return null;
+    }
+    try {
+      return await getRawDTCs(sendCommand, OBD_MODE.PERMANENT_DTC);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await log.error('[ECUContext] Failed to get raw permanent DTCs:', {
+        error: errorMsg,
+      });
+      return null;
+    }
+  };
 
-  // Add getVIN implementation
-  const getVIN = useCallback(async (): Promise<string | null> => {
-    if (state.status !== ECUConnectionStatus.CONNECTED) {
+  const getVIN = async (): Promise<string | null> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get VIN: Not connected to ECU.');
       return null;
     }
@@ -496,7 +478,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       await log.error('[ECUContext] Failed to get VIN:', { error: errorMsg });
       return null;
     }
-  }, [sendCommand, sendCommandRawChunked, state.status]);
+  };
 
   // Add clearDTCs implementation
   const clearDTCs = useCallback(
@@ -518,7 +500,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
     [sendCommand, state.status],
   );
 
-  // Update context value
+  // Update context value (remove dependencies that are no longer callbacks)
   const contextValue = useMemo<ECUContextValue>(
     () => ({
       state,
@@ -539,12 +521,6 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       connectWithECU,
       disconnectFromECU,
       clearDTCs,
-      getVIN,
-      getRawCurrentDTCs,
-      getRawPendingDTCs,
-      getRawPermanentDTCs,
-      getECUInformation,
-      getActiveProtocol,
       sendCommand,
     ],
   );
