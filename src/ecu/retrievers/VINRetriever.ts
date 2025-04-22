@@ -2,7 +2,6 @@ import { log } from '../../utils/logger';
 import { ecuStore } from '../context/ECUStore';
 import {
   DELAYS_MS,
-  RESPONSE_KEYWORDS,
   STANDARD_PIDS,
   PROTOCOL,
   ECUConnectionStatus,

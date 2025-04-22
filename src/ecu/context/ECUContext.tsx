@@ -314,6 +314,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         } catch (timeoutError) {
           await log.warn(
             '[ECUContext] Store update timed out, but connection was successful',
+            timeoutError,
           );
           // Continue anyway since the initial connection was successful
         }

@@ -1,7 +1,6 @@
 import { log } from '../../utils/logger'; // Use project logger
 
 import { RESPONSE_KEYWORDS, PROTOCOL } from './constants';
-import { hexToBytes, bytesToString } from './ecuUtils';
 
 /**
  * Cleans ELM327 response string more aggressively.
