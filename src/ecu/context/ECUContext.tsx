@@ -35,7 +35,12 @@ import type {
   SendCommandFunction,
   ECUActionPayload,
 } from '../utils/types';
-import { ecuStore, getStore, waitForStateCondition, storeConditions } from './ECUStore';
+import {
+  ecuStore,
+  getStore,
+  waitForStateCondition,
+  storeConditions,
+} from './ECUStore';
 
 /**
  * React Context for ECU communication
@@ -516,13 +521,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       sendCommand,
       sendCommandWithResponse: sendCommand,
     }),
-    [
-      state,
-      connectWithECU,
-      disconnectFromECU,
-      clearDTCs,
-      sendCommand,
-    ],
+    [state, connectWithECU, disconnectFromECU, clearDTCs, sendCommand],
   );
 
   return (

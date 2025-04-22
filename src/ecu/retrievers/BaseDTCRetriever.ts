@@ -146,10 +146,6 @@ export class BaseDTCRetriever {
     MODE0A: '0A',
   };
 
-  // Increased timeouts based on JS constants and testing
-  protected static DATA_TIMEOUT = 10000; // For multi-frame reads
-  protected static COMMAND_TIMEOUT = 5000; // Standard command timeout
-
   protected sendCommand: SendCommandFunction;
   protected mode: string;
   protected responsePrefix: string;
@@ -1020,26 +1016,11 @@ export class BaseDTCRetriever {
    */
   protected async sendCommandWithTiming(
     command: string,
-    timeout?: number,
   ): Promise<string | null> {
-    // Determine timeout based on protocol type and command
-    let effectiveTimeout = timeout ?? BaseDTCRetriever.COMMAND_TIMEOUT; // Default timeout
-
-    // Use longer timeouts for non-CAN protocols, especially for data retrieval commands
-    if (!this.isCan) {
-      effectiveTimeout = timeout ?? BaseDTCRetriever.DATA_TIMEOUT; // Longer default for non-CAN data reads
-      await log.debug(
-        `[${this.constructor.name}] Using longer timeout (${effectiveTimeout}ms) for non-CAN protocol.`,
-      );
-    } else {
-      // For CAN, use standard command timeout unless data timeout is explicitly requested
-      effectiveTimeout = timeout ?? BaseDTCRetriever.COMMAND_TIMEOUT;
-    }
-
     await log.debug(
-      `[${this.constructor.name}] Sending command "${command}" with timeout ${effectiveTimeout}ms`,
+      `[${this.constructor.name}] Sending command "${command}" with adaptive timing`,
     );
-    return await this.sendCommand(command, effectiveTimeout);
+    return await this.sendCommand(command);
   }
 
   /**

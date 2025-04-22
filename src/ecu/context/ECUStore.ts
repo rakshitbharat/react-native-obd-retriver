@@ -27,7 +27,7 @@ export const subscribe = (listener: (state: ECUState) => void) => {
 
 export const waitForStateCondition = (
   condition: (state: ECUState) => boolean,
-  timeout: number = 5000
+  timeout: number = 5000,
 ): Promise<void> => {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -47,13 +47,13 @@ export const waitForStateCondition = (
 
 // Common state conditions
 export const storeConditions = {
-  isConnected: (state: ECUState) => 
+  isConnected: (state: ECUState) =>
     state.status === ECUConnectionStatus.CONNECTED,
-  
-  hasDetectedECUs: (state: ECUState) => 
+
+  hasDetectedECUs: (state: ECUState) =>
     (state.detectedEcuAddresses?.length ?? 0) > 0,
-    
-  isConnectedWithECUs: (state: ECUState) => 
-    state.status === ECUConnectionStatus.CONNECTED && 
+
+  isConnectedWithECUs: (state: ECUState) =>
+    state.status === ECUConnectionStatus.CONNECTED &&
     (state.detectedEcuAddresses?.length ?? 0) > 0,
 };

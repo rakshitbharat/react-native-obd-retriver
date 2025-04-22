@@ -206,10 +206,15 @@ export const initializeAdapter = async (
       'OK',
       'ELM327',
       'ATZ',
+      'ATE',
       'ATE0OK',
+      'ATL',
       'ATL0OK',
+      'ATS',
       'ATS0OK',
+      'ATH',
       'ATH0OK',
+      'ATAT',
       'ATAT0OK',
     ].some(validResponse => cleaned.includes(validResponse));
   };
