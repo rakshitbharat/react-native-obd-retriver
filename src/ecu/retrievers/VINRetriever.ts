@@ -87,26 +87,26 @@ export class VINRetriever {
 
   /**
    * Initialize device for VIN retrieval
+   * Simplified: Removes explicit flow control setup as it might be handled
+   * by the initial connection sequence or ATCAF1.
    */
   private async initializeDevice(): Promise<boolean> {
     try {
       // Reset device
-      let response = await this.sendCommand('ATZ');
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      log.debug('[VINRetriever] Resetting device (ATZ)...');
+      await this.sendCommand('ATZ');
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for reset
 
       // Configure for ISO 15765-4 CAN (if applicable)
       if (this.currentState.activeProtocol === 6) {
+        log.debug('[VINRetriever] Configuring CAN protocol (ATSP6, ATH1, ATCAF1)...');
         await this.sendCommand('ATSP6'); // Set Protocol to CAN 11/500
-        await this.sendCommand('ATH1'); // Headers on
-        await this.sendCommand('ATCAF1'); // Formatting on
-        
-        // Set up CAN flow control
-        if (this.currentState.selectedEcuAddress) {
-          const flowHeader = this.currentState.selectedEcuAddress.replace('8', '0');
-          await this.sendCommand(`ATFCSH${flowHeader}`);
-          await this.sendCommand('ATFCSD300000'); // Flow control data
-          await this.sendCommand('ATFCSM1'); // Enable flow control
-        }
+        await this.sendCommand('ATH1'); // Headers on (Important for ECU detection/response parsing)
+        await this.sendCommand('ATCAF1'); // Formatting on (May handle multi-frame responses)
+        // Removed explicit flow control commands (ATFCSH, ATFCSD, ATFCSM1)
+        log.debug('[VINRetriever] CAN protocol configured without explicit flow control setup.');
+      } else {
+        log.debug('[VINRetriever] Not a CAN protocol, skipping CAN-specific setup.');
       }
 
       return true;
