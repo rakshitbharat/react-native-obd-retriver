@@ -229,117 +229,114 @@ export class VINRetriever {
       '[VINRetriever] Initial VIN request failed or returned error. Attempting Flow Control adjustments...',
     );
 
-    // TODO: Detect protocol dynamically if possible, default to common CAN settings
-    // For now, assume common CAN 11-bit (7E8) or 29-bit (18DAF110) response headers
-    // Let's try both potential standard response headers
-    const ecuResponseHeaders = ['7E8', '18DAF110'];
+    // Try shorter timeout first for faster feedback
+    const initialTimeout = 5000;  // Start with 5 seconds
+    const maxTimeout = 15000;     // Max 15 seconds
+    const ecuResponseHeaders = ['7E8']; // Focus on standard 11-bit CAN first
     let successfulResponse: ChunkedResponse | null = null;
 
-    for (const ecuResponseHeader of ecuResponseHeaders) {
+    const flowControlConfigs = [
+      // Try tighter timing first
+      {
+        fcsh: '7E8',
+        fcsd: '300000', // BS=0, ST=0
+        fcsm: '1',
+        desc: 'Standard (BS=0, ST=0, Mode=1)',
+        timeout: initialTimeout,
+      },
+      // Then with block size
+      {
+        fcsh: '7E8',
+        fcsd: '300100', // BS=1, ST=0
+        fcsm: '1',
+        desc: 'With BlockSize (BS=1, ST=0, Mode=1)',
+        timeout: initialTimeout,
+      },
+      // Then with separation time
+      {
+        fcsh: '7E8',
+        fcsd: '300004', // BS=0, ST=4ms
+        fcsm: '1',
+        desc: 'With ST (BS=0, ST=4ms, Mode=1)',
+        timeout: maxTimeout,
+      },
+    ];
+
+    for (const config of flowControlConfigs) {
       log.debug(
-        `[VINRetriever] Trying FC optimization targeting ECU Response Header: ${ecuResponseHeader}`,
+        `[VINRetriever] Trying Flow Control: ${config.desc} with timeout ${config.timeout}ms`,
       );
+      try {
+        // Reset to defaults first
+        await this.sendCommand('ATFCSH7E8');
+        await this.sendCommand('ATFCSD300000');
+        await this.sendCommand('ATFCSM1');
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
 
-      const flowControlConfigs = [
-        // Standard configuration
-        {
-          fcsh: ecuResponseHeader,
-          fcsd: '300000',
-          fcsm: '1',
-          desc: 'Standard (BS=0, ST=0, Mode=1)',
-        },
-        // No wait mode
-        {
-          fcsh: ecuResponseHeader,
-          fcsd: '300000',
-          fcsm: '0',
-          desc: 'No Wait (BS=0, ST=0, Mode=0)',
-        },
-        // Extended wait time (8ms) - ST value is hex 08 = 8ms
-        {
-          fcsh: ecuResponseHeader,
-          fcsd: '300008',
-          fcsm: '1',
-          desc: 'Extended Wait (BS=0, ST=8ms, Mode=1)',
-        },
-      ];
+        // Apply new config
+        const fcshCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_HEADER}${config.fcsh}`;
+        const fcsdCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_DATA}${config.fcsd}`;
+        const fcsmCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_MODE}${config.fcsm}`;
 
-      for (const config of flowControlConfigs) {
-        log.debug(
-          `[VINRetriever] Trying Flow Control: ${config.desc} for Header ${ecuResponseHeader}`,
-        );
-        try {
-          const fcshCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_HEADER}${config.fcsh}`;
-          const fcsdCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_DATA}${config.fcsd}`;
-          const fcsmCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_MODE}${config.fcsm}`;
-          let fcOk = true;
-
-          // Apply Flow Control settings using standard sendCommand
-          for (const cmd of [fcshCmd, fcsdCmd, fcsmCmd]) {
-            const fcResponse = await this.sendCommand(cmd, { timeout: 2000 }); // Use options object
-            if (fcResponse === null || isResponseError(fcResponse)) {
-              log.warn(
-                `[VINRetriever] Flow control command "${cmd}" failed. Response: ${fcResponse ?? 'null'}`,
-              );
-              fcOk = false;
-              break;
-            }
-            await this.delay(DELAYS_MS.COMMAND_SHORT);
-          }
-          if (!fcOk) continue; // Try next config if setup failed
-
-          log.debug(
-            '[VINRetriever] Retrying 0902 command with new FC settings...',
-          );
-          // Retry the VIN command using sendCommandRaw
-          const retryResponse: ChunkedResponse | null =
-            await this.sendCommandRaw('0902', { timeout: 15000 }); // Use options object
-
-          // Check the response and log the result for this specific config attempt
-          const { error: retryError, rawString: retryRawString } =
-            this.checkResponseForErrors(retryResponse?.rawResponse);
-
-          // Log the outcome of this specific FC attempt
-          log.debug(`[VINRetriever] FC Retry Attempt Result (${config.desc})`, {
-            error: retryError,
-            // Log the raw string (cleaned for readability) if available
-            rawString: retryRawString
-              ? retryRawString.replace(/[^\x20-\x7E]/g, '.')
-              : 'N/A',
-            responseReceived: !!retryResponse,
-          });
-
-          if (retryResponse && !retryError) {
-            log.info(
-              `[VINRetriever] Flow control adjustment successful with: ${config.desc} for Header ${ecuResponseHeader}`,
+        let fcOk = true;
+        for (const cmd of [fcshCmd, fcsdCmd, fcsmCmd]) {
+          const fcResponse = await this.sendCommand(cmd, { timeout: 2000 });
+          if (fcResponse === null || isResponseError(fcResponse)) {
+            log.warn(
+              `[VINRetriever] Flow control command "${cmd}" failed. Response: ${fcResponse ?? 'null'}`,
             );
-            successfulResponse = retryResponse; // Store successful response
-            break; // Exit inner loop (configs)
+            fcOk = false;
+            break;
           }
-        } catch (error) {
-          log.warn(
-            `[VINRetriever] Error during Flow Control config attempt (${config.desc}):`,
-            {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
+          await this.delay(DELAYS_MS.COMMAND_SHORT);
         }
-        await this.delay(DELAYS_MS.COMMAND_MEDIUM); // Wait before trying next config
-      } // End config loop
+        if (!fcOk) continue;
 
-      if (successfulResponse) {
-        break; // Exit outer loop (headers) if successful
+        // Try VIN request with current config's timeout
+        log.debug(
+          `[VINRetriever] Retrying 0902 command with timeout ${config.timeout}ms...`,
+        );
+        const retryResponse = await this.sendCommandRaw('0902', {
+          timeout: config.timeout,
+        });
+
+        if (retryResponse?.rawResponse) {
+          const { error: retryError } = this.checkResponseForErrors(
+            retryResponse.rawResponse,
+          );
+          
+          if (!retryError) {
+            log.info(
+              `[VINRetriever] Flow control adjustment successful with: ${config.desc}`,
+            );
+            successfulResponse = retryResponse;
+            break;
+          } else if (retryError.includes('7F 09 31') || retryError.includes('NRC: 31')) {
+            log.debug('[VINRetriever] Still getting NRC 31, trying next config...');
+            continue;
+          } else {
+            log.warn(
+              `[VINRetriever] Got different error with config ${config.desc}:`,
+              retryError,
+            );
+          }
+        }
+      } catch (error) {
+        const isTimeout = String(error).includes('timed out');
+        log.warn(
+          `[VINRetriever] ${isTimeout ? 'Timeout' : 'Error'} during Flow Control config attempt (${config.desc}):`,
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
       }
-    } // End header loop
+      await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+    }
 
     if (!successfulResponse) {
-      log.warn(
-        '[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.',
-      );
-    } else {
-      log.info('[VINRetriever] Flow Control retry attempt yielded a response.'); // Log success
+      log.warn('[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.');
     }
-    return successfulResponse; // Return the successful response or null
+    return successfulResponse;
   }
 
   /**
