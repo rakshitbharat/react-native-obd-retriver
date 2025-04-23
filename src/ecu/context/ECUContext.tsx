@@ -242,17 +242,13 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       try {
         await log.debug(
           `[ECUContext] Sending raw chunked command via BT hook: ${command}`,
-          timeout,
+          { timeout },
         );
-
-        // Convert number timeout to object format
-        const timeoutObj = typeof timeout === 'number' 
-          ? { timeout } 
-          : timeout;
 
         const rawResponse = await bluetoothSendCommandRawChunked(
           command,
-          timeoutObj,
+          // Adapt timeout format for the library
+          typeof timeout === 'number' ? { timeout } : timeout,
         );
 
         // Validate response structure
