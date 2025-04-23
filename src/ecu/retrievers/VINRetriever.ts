@@ -43,9 +43,10 @@ export class VINRetriever {
    * }
    */
   public async retrieveVIN(): Promise<string | null> {
+    let r_s = await this.sendCommand('ATZ');
     let r = await this.bluetoothSendCommandRawChunked('0902');
     log.info(JSON.stringify({
-      r, s: this.currentState
+      r,r_s, s: this.currentState
     }));
     return null;
   }
