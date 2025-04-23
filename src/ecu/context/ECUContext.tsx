@@ -233,7 +233,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
     ): Promise<ChunkedResponse> => {
       if (!isBluetoothConnected || !bluetoothSendCommandRawChunked) {
         await log.warn(
-          '[ECUContext] Attempted to send chunked command while Bluetooth disconnected or command function unavailable:',
+          '[ECUContext] Attempted to send chunked command while Bluetooth disconnected or function unavailable:',
           { command },
         );
         throw new Error('Bluetooth not connected or function unavailable');
@@ -242,12 +242,17 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       try {
         await log.debug(
           `[ECUContext] Sending raw chunked command via BT hook: ${command}`,
-          { timeout },
+          timeout,
         );
+
+        // Convert number timeout to object format
+        const timeoutObj = typeof timeout === 'number' 
+          ? { timeout } 
+          : timeout;
 
         const rawResponse = await bluetoothSendCommandRawChunked(
           command,
-          typeof timeout === 'number' ? { timeout } : timeout,
+          timeoutObj,
         );
 
         // Validate response structure

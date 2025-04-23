@@ -1,6 +1,11 @@
 import { log } from '../../utils/logger';
 import { ecuStore } from '../context/ECUStore';
-import { parseVinFromResponse, isResponseError } from '../utils/helpers';
+import {
+  parseVinFromResponse,
+  isResponseError,
+  assembleMultiFrameResponse,
+  isVinResponseFrame,
+} from '../utils/helpers';
 import {
   DELAYS_MS,
   STANDARD_PIDS,
@@ -163,33 +168,29 @@ export class VINRetriever {
   }
 
   private async _initializeForVIN(): Promise<boolean> {
-    // Slow initialization sequence for problematic ECUs
-    const initCommands = [
-      { cmd: 'ATZ', delay: 2000 }, // Longer delay after reset
-      { cmd: 'ATI', delay: 300 }, // Get device info
-      { cmd: 'ATDP', delay: 300 }, // Get protocol
-      { cmd: 'ATE0', delay: 200 }, // Echo off
-      { cmd: 'ATL0', delay: 200 }, // Linefeeds off
-      { cmd: 'ATS0', delay: 200 }, // Spaces off
-      { cmd: 'ATH1', delay: 200 }, // Headers on
-      { cmd: 'ATAT1', delay: 200 }, // Adaptive timing on
-      { cmd: 'ATST64', delay: 200 }, // Set timeout to 100ms (64 = hex 100ms)
-      { cmd: 'ATFCSM1', delay: 200 }, // Enable flow control
-      { cmd: 'ATCAF1', delay: 200 }, // Formatting on
-    ];
-
-    for (const { cmd, delay } of initCommands) {
+    const currentState = ecuStore.getState();
+    // Only configure if headers aren't already enabled
+    if (!this.isHeaderEnabled) {
       try {
-        const response = await this.sendCommand(cmd);
-        if (!response) {
-          void log.warn(`[VINRetriever] No response for ${cmd}`);
-          continue;
+        const response = await this.sendCommand('ATH1');
+        if (!response || isResponseError(response)) {
+          void log.warn('[VINRetriever] Failed to enable headers');
+          return false;
         }
-        await this.delay(delay);
+        this.isHeaderEnabled = true;
       } catch (error) {
-        void log.warn(`[VINRetriever] Error sending ${cmd}:`, error);
+        void log.warn('[VINRetriever] Error enabling headers:', error);
+        return false;
       }
     }
+
+    // Check if we need Flow Control for CAN
+    if (this.isCan && 
+        currentState.activeProtocol && 
+        this.protocolState !== PROTOCOL_STATES.READY) {
+      await this._configureForProtocol();
+    }
+
     return true;
   }
 
@@ -203,20 +204,27 @@ export class VINRetriever {
    * @returns true if response indicates an error or unsupported command
    */
   private isNegativeResponse(response: string): boolean {
-    // Common negative response codes:
-    // 7F 09 11 = service not supported
-    // 7F 09 12 = subfunction not supported
-    // 7F 09 31 = request out of range
-    const negativeMatch = response.match(/7F\s*09\s*([0-9A-F]{2})/i);
-    if (negativeMatch) {
-      const nrcCode = negativeMatch[1];
-      void log.warn('[VINRetriever] Negative response:', {
-        code: nrcCode,
-        meaning: this.getNrcMeaning(nrcCode),
-      });
-      return true;
-    }
-    return false;
+    // Common negative response codes for Mode 09 (VIN)
+    const negativePatterns = [
+      /7F\s*09\s*([0-9A-F]{2})/i, // General negative response
+      /7F\s*01\s*31/i,     // Request out of range
+      /7F\s*09\s*31/i,     // Request out of range
+      /7F\s*09\s*11/i,     // Service not supported  
+      /7F\s*09\s*12/i      // Sub-function not supported
+    ];
+
+    return negativePatterns.some(pattern => {
+      const match = response.match(pattern);
+      if (match) {
+        void log.warn('[VINRetriever] Negative response:', {
+          pattern: pattern.source,
+          response,
+          code: match[1]
+        });
+        return true;
+      }
+      return false;
+    });
   }
 
   /**
@@ -263,11 +271,66 @@ export class VINRetriever {
     }
   }
 
+  private convertChunkToHex(chunk: Uint8Array): string {
+    // Type-safe conversion and filtering
+    return Array.from(chunk)
+      .map((byte: number): string => {
+        // Filter known control characters explicitly
+        if (byte === 0x0D || byte === 0x3E || byte === 0x20) {
+          return '';
+        }
+        return byte.toString(16).padStart(2, '0').toUpperCase();
+      })
+      .filter((hex: string): boolean => hex.length > 0)
+      .join('');
+  }
+
+  private processResponseChunks(chunks: Uint8Array[]): string {
+    if (!chunks?.length) {
+      void log.warn('[VINRetriever] No chunks to process');
+      return '';
+    }
+
+    // Process all chunks to hex
+    const hexString = chunks
+      .map((chunk: Uint8Array): string => this.convertChunkToHex(chunk))
+      .join('');
+
+    void log.debug('[VINRetriever] Raw hex response:', hexString);
+
+    if (!hexString) {
+      void log.warn('[VINRetriever] No hex data after conversion');
+      return '';
+    }
+
+    // Use helper to assemble multiframe response if needed
+    const assembledResponse = assembleMultiFrameResponse(hexString);
+    
+    // Only try VIN parsing if we have a VIN frame
+    if (isVinResponseFrame(assembledResponse)) {
+      const vin = parseVinFromResponse(assembledResponse);
+      if (vin) {
+        void log.info('[VINRetriever] Found VIN:', vin);
+        return vin;
+      }
+    }
+
+    return assembledResponse;
+  }
+
   public async retrieveVIN(): Promise<string | null> {
-    if (this.ecuState.status !== ECUConnectionStatus.CONNECTED) {
+    const currentState = ecuStore.getState();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       void log.error('[VINRetriever] ECU not connected');
       return null;
     }
+
+    // Update protocol settings from store
+    this.protocolNumber = currentState.activeProtocol ?? PROTOCOL.AUTO;
+    this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
+    this.ecuResponseHeader = currentState.selectedEcuAddress ?? 
+                           currentState.detectedEcuAddresses?.[0] ?? 
+                           null;
 
     let attempt = 0;
     const maxAttempts = 3;
@@ -275,72 +338,46 @@ export class VINRetriever {
     while (attempt < maxAttempts) {
       attempt++;
       try {
-        // Initialize with slower sequence first
+        // Initialize using text-based AT commands
         await this._initializeForVIN();
 
-        // Try different request variants
+        // VIN requests use bluetoothSendCommandRawChunked for binary data
         const vinRequests = [
-          '0902', // Standard request
-          '0902FF', // Some ECUs need this variant
-          '09020000', // Some ECUs need padding
+          '0902',      // Standard Mode 9 PID 2 request
+          '0902FF',    // Extended request
+          '09020000',  // Padded request
         ];
 
         for (const request of vinRequests) {
           try {
-            const rawResponse = await this.bluetoothSendCommandRawChunked(
-              request,
-              {
-                timeout: VINRetriever.DATA_TIMEOUT,
-              },
-            );
+            // Use raw chunked mode for VIN data
+            const rawResponse = await this.bluetoothSendCommandRawChunked(request, {
+              timeout: VINRetriever.DATA_TIMEOUT,
+            });
 
-            // Validate raw response structure
-            if (!rawResponse?.chunks?.length) {
-              void log.warn(
-                `[VINRetriever] Invalid chunked response on attempt ${attempt}`,
-              );
+            void log.debug('[VINRetriever] Raw chunks:', 
+              rawResponse.chunks.map(chunk => Array.from(chunk)));
+
+            // Process binary chunks
+            const hexResponse = this.processResponseChunks(rawResponse.chunks);
+            void log.debug('[VINRetriever] Hex response:', hexResponse);
+
+            if (this.isNegativeResponse(hexResponse)) {
+              void log.warn(`[VINRetriever] ECU rejected ${request}`);
               continue;
             }
 
-            // Process each chunk with error handling
-            const processedChunks: string[] = [];
-            const decoder = new TextDecoder();
-
-            for (const chunk of rawResponse.chunks) {
-              try {
-                if (!(chunk instanceof Uint8Array)) continue;
-                const decodedChunk = decoder.decode(chunk).trim();
-                // Only add non-empty chunks that aren't just terminators
-                if (decodedChunk && !decodedChunk.match(/^[\r\n>]*$/)) {
-                  processedChunks.push(decodedChunk);
-                }
-              } catch (e) {
-                continue;
-              }
+            const vin = parseVinFromResponse(hexResponse);
+            if (vin) {
+              void log.info(`[VINRetriever] Found VIN: ${vin}`);
+              return vin;
             }
-
-            const stringResponse = processedChunks
-              .join(' ')
-              .replace(/[\r\n>]/g, '')
-              .trim();
-
-            // If we got a negative response, try next variant
-            if (this.isNegativeResponse(stringResponse)) {
-              void log.warn(
-                `[VINRetriever] ECU rejected ${request}, trying next variant...`,
-              );
-              continue;
-            }
-
-            const vin = parseVinFromResponse(stringResponse);
-            if (vin) return vin;
           } catch (error) {
-            // Only log and continue to next variant
             void log.warn(`[VINRetriever] Error with ${request}:`, error);
           }
         }
 
-        // If we get here, no variant worked, try protocol config
+        // Configure protocol using text-based AT commands
         if (attempt < maxAttempts) {
           await this._configureForProtocol();
           await this.delay(DELAYS_MS.RETRY * 2);
