@@ -39,12 +39,12 @@ export interface VINConstants {
   INIT_SEQUENCE_POST_PROTOCOL: CommandConfig[]; // Commands after protocol set
   CAN_CONFIGS: CANConfig[];
   FLOW_CONTROL_CONFIGS: {
-    // Define flow control variations
-    fcsh: string; // Placeholder, will be replaced by config.flowAddr
+    fcsh: string;
     fcsd: string;
     fcsm: string;
     desc: string;
   }[];
+  ALTERNATE_HEADERS: readonly string[];
 }
 
 /**

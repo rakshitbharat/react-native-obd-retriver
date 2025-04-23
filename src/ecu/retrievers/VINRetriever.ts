@@ -69,6 +69,13 @@ const VIN_CONSTANTS: VINConstants = {
     { fcsh: '', fcsd: '300400', fcsm: '1', desc: 'Block Size 4 Mode 1' }, // Different block size
     { fcsh: '', fcsd: '300004', fcsm: '1', desc: 'Separation Time 4ms' }, // Shorter separation time
   ],
+  ALTERNATE_HEADERS: [
+    '7DF',    // Standard 11-bit broadcast
+    '7E0',    // Standard ECU address
+    '18DB33F1', // Standard 29-bit broadcast
+    'DB33F1',   // Alternate 29-bit format
+    '18DA10F1', // Common ECU address
+  ],
 } as const;
 
 export class VINRetriever {
@@ -572,34 +579,38 @@ export class VINRetriever {
       await this.sendCommand('ATFCSM0');
       await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
 
-      let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND);
+      // Try each header in sequence until we get a response
+      for (const header of VIN_CONSTANTS.ALTERNATE_HEADERS) {
+        log.debug(`[VINRetrieverLIB] Trying VIN request with header: ${header}`);
+        
+        // Set header
+        await this.sendCommand(`ATSH${header}`);
+        await this.delay(50);
+        
+        // Send VIN request without timeout
+        let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
+          raw: true
+        });
 
-      log.debug(
-        `[VINRetrieverLIB] sendVINRequest attempt ${attempt}: response:`,
-        response,
-      );
-
-      // Check if we need flow control based on response
-      if (
-        !response?.rawResponse ||
-        response.rawResponse.length === 0 ||
-        this.checkResponseForErrors(response.rawResponse).error
-      ) {
-        // Add null checks before passing to tryFlowControl
-        if (!this.currentProtocol) {
-          log.error(
-            '[VINRetrieverLIB] Cannot try flow control: No protocol set',
-          );
-          return null;
+        // If we got any response, try to process it
+        if (response?.rawResponse && response.rawResponse.length > 0) {
+          log.debug(`[VINRetrieverLIB] Got response with header ${header}`);
+          return response;
         }
 
-        response = await this.tryFlowControl(
-          this.currentProtocol, // Now guaranteed to be non-null
-          this.selectedEcuAddress, // Can be null, tryFlowControl handles it
+        // Small delay before trying next header
+        await this.delay(100);
+      }
+
+      // If no response with any header, try flow control
+      if (this.currentProtocol) {
+        return await this.tryFlowControl(
+          this.currentProtocol,
+          this.selectedEcuAddress
         );
       }
 
-      return response;
+      return null;
     } catch (error) {
       this.adjustAdaptiveTiming(false); // Adjust timing on error
       log.error('[VINRetrieverLIB] VIN request failed with exception:', error);
@@ -779,67 +790,30 @@ export class VINRetriever {
 
     for (const fcConfig of VIN_CONSTANTS.FLOW_CONTROL_CONFIGS) {
       try {
-        // Reset protocol and timing before each FC attempt
-        await this.sendCommand(`ATSP${activeProtocol}`);
-        await this.delay(VIN_CONSTANTS.DELAYS.PROTOCOL);
+        // For each flow control config, try each header
+        for (const header of VIN_CONSTANTS.ALTERNATE_HEADERS) {
+          await this.sendCommand(`ATSH${header}`);
+          await this.delay(50);
 
-        await this.sendCommand('ATAT2'); // Force adaptive timing 2
-        await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
+          // Apply flow control settings
+          await this.sendCommand(`ATFCSH${flowAddr}`);
+          await this.delay(50);
+          await this.sendCommand(`ATFCSD${fcConfig.fcsd}`);
+          await this.delay(50);
+          await this.sendCommand(`ATFCSM${fcConfig.fcsm}`);
+          await this.delay(50);
 
-        // Apply flow control settings with shorter timeouts
-        await this.sendCommand(`ATFCSH${flowAddr}`);
-        await this.delay(50);
-        await this.sendCommand(`ATFCSD${fcConfig.fcsd}`);
-        await this.delay(50);
-        await this.sendCommand(`ATFCSM${fcConfig.fcsm}`);
-        await this.delay(50);
+          // Send VIN request without timeout
+          const response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
+            raw: true
+          });
 
-        // Try VIN request with this FC config
-        const response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
-          timeout: VIN_CONSTANTS.TIMEOUT,
-        });
-
-        const isValid =
-          response?.rawResponse && response.rawResponse.length > 0;
-        this.adjustAdaptiveTiming(isValid ?? false); // Ensure boolean
-
-        if (isValid && response.rawResponse) {
-          // Add check for rawResponse existence
-          const validation = this.checkResponseForErrors(response.rawResponse);
-          // Check if we got a non-error response OR a potentially recoverable error
-          if (
-            !validation.error ||
-            validation.error.includes('Negative Response') ||
-            validation.error.includes('Potential Negative Response')
-          ) {
-            log.info(
-              `[VINRetrieverLIB] Flow control config "${fcConfig.desc}" yielded a potentially valid response.`,
-            );
-            // Attempt to process it immediately to see if it's the VIN
-            const potentialVin = this.processVINResponse(response.rawResponse);
-            if (potentialVin && this.isValidVIN(potentialVin)) {
-              log.info(
-                `[VINRetrieverLIB] Successfully retrieved VIN using flow control: ${fcConfig.desc}`,
-              ); // Use log.info
-              return response; // Return the successful response object
-            } else {
-              log.debug(
-                `[VINRetrieverLIB] Flow control config "${fcConfig.desc}" response did not yield a valid VIN, continuing...`,
-              );
-            }
-          } else {
-            log.debug(
-              `[VINRetrieverLIB] Flow control config "${fcConfig.desc}" failed with error: ${validation.error}`,
-            );
+          if (response?.rawResponse && response.rawResponse.length > 0) {
+            return response;
           }
-        } else {
-          log.debug(
-            `[VINRetrieverLIB] Flow control config "${fcConfig.desc}" yielded invalid/empty response.`,
-          );
-        }
 
-        // Add delay between trying different flow control configs
-        await this.delay(VIN_CONSTANTS.DELAYS.PROTOCOL);
+          await this.delay(100);
+        }
       } catch (error) {
         this.adjustAdaptiveTiming(false); // Adjust timing on error
         log.warn(
