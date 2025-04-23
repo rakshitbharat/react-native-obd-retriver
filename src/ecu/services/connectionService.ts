@@ -1,6 +1,5 @@
 import { log } from '../../utils/logger';
 import { ProtocolManager } from '../protocols/ProtocolManager';
-import { VINRetriever } from '../retrievers/VINRetriever'; // Import the new VINRetriever
 import {
   DELAYS_MS,
   ELM_COMMANDS,
@@ -19,12 +18,12 @@ import {
   assembleMultiFrameResponse, // Keep helper, might be used elsewhere
   parseDtcsFromResponse,
 } from '../utils/helpers';
-
 import type {
   SendCommandFunction,
-  SendCommandFunctionWithResponse,
+  SendCommandRawFunction, // Updated type import
   RawDTCResponse,
 } from '../utils/types';
+import { VINRetriever } from '../retrievers/VINRetriever'; // Ensure VINRetriever is imported
 
 /**
  * Result type for ECU connection attempt
@@ -509,13 +508,10 @@ export const disconnectFromECU = async (
       { error: errorMsg },
     );
   }
-};
+}
 
 // ==========================================================================
 // --- NON-ECU FUNCTIONS (VIN, DTC, CLEAR, RAW DTC) ---
-// --- These functions remain UNCHANGED as per the requirements.            ---
-// --- Only logging and type annotations are updated for consistency.     ---
-// --- VIN Retrieval is now updated to use VINRetriever                 ---
 // ==========================================================================
 
 /**
@@ -563,30 +559,28 @@ export const disconnectFromECU = async (
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
-  sendCommandRawChunked: SendCommandFunctionWithResponse,
+  // Rename parameter and update type annotation
+  sendCommandRaw: SendCommandRawFunction,
 ): Promise<string | null> => {
-  await log.debug(
-    '[connectionService] Attempting to retrieve VIN using VINRetriever...',
-  );
   try {
-    // Create VINRetriever instance with both command functions
-    const vinRetriever = new VINRetriever(sendCommand, sendCommandRawChunked);
-
-    // Call the retriever's method to get the VIN
+    await log.info('[ConnectionService] Attempting to retrieve VIN...');
+    // Pass the renamed function to the VINRetriever constructor
+    const vinRetriever = new VINRetriever(sendCommand, sendCommandRaw);
     const vin = await vinRetriever.retrieveVIN();
 
     if (vin) {
-      await log.info(`[connectionService] VIN Retrieved successfully: ${vin}`);
+      await log.info(`[ConnectionService] VIN retrieved successfully: ${vin}`);
     } else {
-      await log.warn('[connectionService] Failed to retrieve VIN.');
+      await log.warn('[ConnectionService] Failed to retrieve VIN.');
     }
+
     return vin;
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    await log.error(
-      '[connectionService] Error during VIN retrieval via VINRetriever:',
-      { error: errorMsg },
-    );
+    await log.error('[ConnectionService] Error retrieving VIN:', {
+      error: errorMsg,
+    });
+
     return null;
   }
 };

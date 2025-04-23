@@ -396,11 +396,8 @@ export type SendCommandFunction = (
  * This type might differ slightly from the internal ChunkedResponse.
  */
 export interface BluetoothChunkedResponse {
-  /** Array of raw data chunks received. */
   chunks: Uint8Array[];
-  /** Optional raw response as array of number arrays (bytes per chunk). */
-  rawResponse?: number[][];
-  // Note: command and totalBytes are NOT expected from the hook.
+  rawResponse?: number[][]; // Optional property
 }
 
 /**
@@ -422,7 +419,7 @@ export interface ChunkedResponse {
  * Type definition for a function that sends a command and returns a raw, chunked response.
  * This function returns the local ChunkedResponse type.
  */
-export type SendCommandFunctionWithResponse = (
+export type SendCommandRawFunction = (
   command: string,
   options?: number | { timeout?: number },
 ) => Promise<ChunkedResponse>; // Returns the local ChunkedResponse type

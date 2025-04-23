@@ -7,6 +7,7 @@ import React, {
   type FC,
   useEffect,
 } from 'react';
+// Import the correct function name from the hook
 import { useBluetooth } from 'react-native-bluetooth-obd-manager';
 import { log } from '../../utils/logger';
 import {
@@ -29,9 +30,9 @@ import type {
   ECUContextValue,
   RawDTCResponse,
   SendCommandFunction,
-  ChunkedResponse, // This is the local definition { chunks, command, totalBytes, rawResponse? }
-  BluetoothChunkedResponse, // Use the locally defined type (now without command)
-  SendCommandFunctionWithResponse, // This uses the local ChunkedResponse
+  ChunkedResponse,
+  BluetoothChunkedResponse,
+  SendCommandRawFunction, // Keep this type alias for our internal function
   ECUActionPayload,
   ExtendedPeripheral,
 } from '../utils/types';
@@ -113,7 +114,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(ecuReducer, initialState);
   const {
     sendCommand: bluetoothSendCommand,
-    // This hook function returns Promise<BluetoothChunkedResponse> (now the local type)
+    // Import the function that returns the chunked response object
     sendCommandRawChunked: bluetoothSendCommandRawChunked,
     connectedDevice,
     error,
@@ -225,20 +226,19 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   );
 
   // --- Use the raw chunked send command if available ---
-  // This is used for raw command sending, e.g., for AT commands
-  // This wrapper function returns Promise<ChunkedResponse> (local type with totalBytes)
-  const sendCommandRawChunked = useCallback<SendCommandFunctionWithResponse>(
+  // Keep our internal wrapper function named sendCommandRaw
+  const sendCommandRaw = useCallback<SendCommandRawFunction>(
     async (
       command: string,
       timeout?: number | { timeout?: number },
-    ): Promise<ChunkedResponse> => { // Return type is the local ChunkedResponse
+    ): Promise<ChunkedResponse> => {
+      // Check if the imported chunked function is available
       if (!isBluetoothConnected || !bluetoothSendCommandRawChunked) {
         await log.warn(
-          '[ECUContext] Attempted to send chunked command while Bluetooth disconnected or function unavailable:',
+          '[ECUContext] Attempted to send raw command while Bluetooth disconnected or chunked function unavailable:',
           { command },
         );
-        // Throw error instead of returning null to match Promise<ChunkedResponse>
-        throw new Error('Bluetooth not connected or function unavailable');
+        throw new Error('Bluetooth not connected or chunked function unavailable');
       }
 
       try {
@@ -247,31 +247,39 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           { timeout },
         );
 
-        // Explicitly type hookResponse with the locally defined type (without command)
-        const hookResponse: BluetoothChunkedResponse = await bluetoothSendCommandRawChunked(
-          command,
-          typeof timeout === 'number' ? { timeout } : timeout,
-        );
+        // Call the imported chunked function from the hook
+        const hookResponse: BluetoothChunkedResponse =
+          await bluetoothSendCommandRawChunked( // Use the function from the hook
+            command,
+            typeof timeout === 'number' ? { timeout } : timeout,
+          );
 
         // Validate the structure received from the hook (using local BluetoothChunkedResponse type)
         if (!hookResponse || !Array.isArray(hookResponse.chunks)) {
-           await log.error('[ECUContext] Invalid chunked response structure received from hook', { response: hookResponse });
-           throw new Error('Invalid chunked response received from hook');
+          await log.error(
+            '[ECUContext] Invalid chunked response structure received from hook',
+            { response: hookResponse },
+          );
+          throw new Error('Invalid chunked response received from hook');
         }
 
         // Calculate totalBytes from the received chunks
-        const calculatedTotalBytes = hookResponse.chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+        const calculatedTotalBytes = hookResponse.chunks.reduce(
+          (acc, chunk) => acc + chunk.length,
+          0,
+        );
 
         // Construct the response object matching the local ChunkedResponse type (with totalBytes)
-        const response: ChunkedResponse = { // Type is the local ChunkedResponse
+        const response: ChunkedResponse = {
+          // Type is the local ChunkedResponse
           chunks: hookResponse.chunks,
           command: command, // Use the command passed into the function
           totalBytes: calculatedTotalBytes, // Use calculated totalBytes
-          rawResponse: hookResponse.rawResponse, // Safely access rawResponse
+          rawResponse: hookResponse.rawResponse, // Copies the optional property
         };
 
         await log.debug(
-          `[ECUContext] Received chunked response for "${response.command}": ${response.chunks.length} chunks`,
+          `[ECUContext] Received raw response for "${response.command}": ${response.chunks.length} chunks`,
           // Access totalBytes from the new object
           { totalBytes: response.totalBytes },
         );
@@ -279,6 +287,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         // Return the newly constructed object which matches the local type definition
         return response;
       } catch (error: unknown) {
+        // Log and handle errors, re-throw to reject the promise
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         await log.error(
@@ -288,10 +297,10 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
             stack: error instanceof Error ? error.stack : undefined,
           },
         );
-        // Re-throw the error to ensure the promise rejects
         throw error;
       }
     },
+    // Update dependency array to use the imported chunked function
     [isBluetoothConnected, bluetoothSendCommandRawChunked, log],
   );
 
@@ -505,8 +514,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
       return null;
     }
     try {
-      // Pass the correctly typed sendCommandRawChunked
-      return await getVehicleVIN(sendCommand, sendCommandRawChunked);
+      // Pass our internal sendCommandRaw wrapper function
+      return await getVehicleVIN(sendCommand, sendCommandRaw);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ECUContext] Failed to get VIN:', { error: errorMsg });
