@@ -1,14 +1,41 @@
-// filepath: src/ecu/retrievers/VINRetriever.ts
 import { log } from '../../utils/logger';
 import { DELAYS_MS, RESPONSE_KEYWORDS, ELM_COMMANDS } from '../utils/constants';
-import { isResponseError } from '../utils/helpers'; // Import helpers
-import { bytesToHex, bytesToString, bytesToHex as utilBytesToHex } from '../utils/ecuUtils'; // Use ecuUtils for consistency
+import { isResponseError } from '../utils/helpers';
+import { bytesToHex, bytesToString } from '../utils/ecuUtils';
+import { ecuStore } from '../context/ECUStore';
 
 import type {
   SendCommandFunction,
   SendCommandRawFunction,
   ChunkedResponse,
 } from '../utils/types';
+
+// Constants for VIN retrieval
+const VIN_CONSTANTS = {
+  COMMAND: '0902',
+  TIMEOUT: 8000,    // Reduced from 15000
+  DELAYS: {
+    INIT: 500,      // Reduced from 1000
+    COMMAND: 200,   // Reduced from 300
+    RESPONSE: 300   // Reduced from 500
+  },
+  CAN_INIT_SEQUENCE: [
+    { cmd: 'ATE0', desc: 'Echo off' },
+    { cmd: 'ATL0', desc: 'Linefeeds off' },
+    { cmd: 'ATH1', desc: 'Headers on' },
+    { cmd: 'ATCAF1', desc: 'Formatting on' },
+    { cmd: 'ATST64', desc: 'Set timeout' },
+    { cmd: 'ATFCSM1', desc: 'Flow control mode' },
+    { cmd: 'ATFCSH7E8', desc: 'Flow control header' },
+    { cmd: 'ATCRA7E8', desc: 'Set receive address' }
+  ],
+  VALID_RESPONSES: [
+    'OK',
+    '>', 
+    'ELM327',
+    '62'  // Common success suffix
+  ]
+} as const;
 
 export class VINRetriever {
   private sendCommand: SendCommandFunction;
@@ -44,7 +71,7 @@ export class VINRetriever {
     // Ensure it's Uint8Array or number[] before passing
     const validBytes =
       bytes instanceof Uint8Array || Array.isArray(bytes) ? bytes : [];
-    return utilBytesToHex(validBytes);
+    return bytesToHex(validBytes);
   }
 
   /**
@@ -220,123 +247,127 @@ export class VINRetriever {
     return result;
   }
 
-  /**
-   * Attempts to optimize CAN flow control settings and retry the VIN command.
-   * Based on logic from BaseDTCRetriever and ElmProtocolHelper.
-   */
-  private async tryFlowControlAndRetryVIN(): Promise<ChunkedResponse | null> {
-    log.debug(
-      '[VINRetriever] Initial VIN request failed or returned error. Attempting Flow Control adjustments...',
+  private isValidCommandResponse(response: string | null): boolean {
+    if (!response) return false;
+    const cleaned = response.trim().toUpperCase();
+    
+    // Check if response ends with known success patterns
+    return VIN_CONSTANTS.VALID_RESPONSES.some(valid => 
+      cleaned.endsWith(valid) || 
+      cleaned.includes(valid)
     );
+  }
 
-    // Try shorter timeout first for faster feedback
-    const initialTimeout = 5000;  // Start with 5 seconds
-    const maxTimeout = 15000;     // Max 15 seconds
-    const ecuResponseHeaders = ['7E8']; // Focus on standard 11-bit CAN first
-    let successfulResponse: ChunkedResponse | null = null;
+  private async initializeDevice(): Promise<boolean> {
+    try {
+      const state = ecuStore.getState();
+      
+      if (state.status !== 'CONNECTED' || state.activeProtocol !== 6) {
+        log.warn('[VINRetriever] Not in CAN protocol or not connected', state);
+        return false;
+      }
 
-    const flowControlConfigs = [
-      // Try tighter timing first
-      {
-        fcsh: '7E8',
-        fcsd: '300000', // BS=0, ST=0
-        fcsm: '1',
-        desc: 'Standard (BS=0, ST=0, Mode=1)',
-        timeout: initialTimeout,
-      },
-      // Then with block size
-      {
-        fcsh: '7E8',
-        fcsd: '300100', // BS=1, ST=0
-        fcsm: '1',
-        desc: 'With BlockSize (BS=1, ST=0, Mode=1)',
-        timeout: initialTimeout,
-      },
-      // Then with separation time
-      {
-        fcsh: '7E8',
-        fcsd: '300004', // BS=0, ST=4ms
-        fcsm: '1',
-        desc: 'With ST (BS=0, ST=4ms, Mode=1)',
-        timeout: maxTimeout,
-      },
+      // Reset device
+      await this.sendCommand('ATZ');
+      await this.delay(VIN_CONSTANTS.DELAYS.INIT);
+
+      // Initialize with mandatory sequence
+      for (const { cmd, desc } of VIN_CONSTANTS.CAN_INIT_SEQUENCE) {
+        const response = await this.sendCommand(cmd);
+        if (!this.isValidCommandResponse(response)) {
+          log.warn(`[VINRetriever] ${desc} failed:`, { cmd, response });
+          // Continue anyway as some commands might return different responses
+        }
+        await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
+      }
+
+      // Set header last
+      if (state.selectedEcuAddress) {
+        await this.sendCommand(`ATSH${state.selectedEcuAddress}`);
+        await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
+      }
+
+      return true;
+    } catch (error) {
+      log.error('[VINRetriever] Init failed:', error);
+      return false;
+    }
+  }
+
+  private async tryFlowControl(): Promise<ChunkedResponse | null> {
+    // Simplified flow control sequence
+    const flowConfigs = [
+      { fcsd: '300000', desc: 'Standard' },
+      { fcsd: '300100', desc: 'With Block Size' },
+      { fcsd: '300004', desc: 'With ST' }
     ];
 
-    for (const config of flowControlConfigs) {
-      log.debug(
-        `[VINRetriever] Trying Flow Control: ${config.desc} with timeout ${config.timeout}ms`,
-      );
+    for (const config of flowConfigs) {
       try {
-        // Reset to defaults first
         await this.sendCommand('ATFCSH7E8');
-        await this.sendCommand('ATFCSD300000');
+        await this.sendCommand(`ATFCSD${config.fcsd}`);
         await this.sendCommand('ATFCSM1');
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
 
-        // Apply new config
-        const fcshCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_HEADER}${config.fcsh}`;
-        const fcsdCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_DATA}${config.fcsd}`;
-        const fcsmCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_MODE}${config.fcsm}`;
-
-        let fcOk = true;
-        for (const cmd of [fcshCmd, fcsdCmd, fcsmCmd]) {
-          const fcResponse = await this.sendCommand(cmd, { timeout: 2000 });
-          if (fcResponse === null || isResponseError(fcResponse)) {
-            log.warn(
-              `[VINRetriever] Flow control command "${cmd}" failed. Response: ${fcResponse ?? 'null'}`,
-            );
-            fcOk = false;
-            break;
-          }
-          await this.delay(DELAYS_MS.COMMAND_SHORT);
-        }
-        if (!fcOk) continue;
-
-        // Try VIN request with current config's timeout
-        log.debug(
-          `[VINRetriever] Retrying 0902 command with timeout ${config.timeout}ms...`,
-        );
-        const retryResponse = await this.sendCommandRaw('0902', {
-          timeout: config.timeout,
+        log.debug(`[VINRetriever] Trying ${config.desc} flow control`);
+        
+        const response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
+          timeout: VIN_CONSTANTS.TIMEOUT
         });
 
-        if (retryResponse?.rawResponse) {
-          const { error: retryError } = this.checkResponseForErrors(
-            retryResponse.rawResponse,
-          );
-          
-          if (!retryError) {
-            log.info(
-              `[VINRetriever] Flow control adjustment successful with: ${config.desc}`,
-            );
-            successfulResponse = retryResponse;
-            break;
-          } else if (retryError.includes('7F 09 31') || retryError.includes('NRC: 31')) {
-            log.debug('[VINRetriever] Still getting NRC 31, trying next config...');
-            continue;
-          } else {
-            log.warn(
-              `[VINRetriever] Got different error with config ${config.desc}:`,
-              retryError,
-            );
+        if (response?.rawResponse) {
+          const { error } = this.checkResponseForErrors(response.rawResponse);
+          if (!error || error.includes('7F0931')) {
+            return response;
           }
         }
       } catch (error) {
-        const isTimeout = String(error).includes('timed out');
-        log.warn(
-          `[VINRetriever] ${isTimeout ? 'Timeout' : 'Error'} during Flow Control config attempt (${config.desc}):`,
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
+        log.warn(`[VINRetriever] ${config.desc} flow control failed:`, error);
       }
-      await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
     }
+    return null;
+  }
 
-    if (!successfulResponse) {
-      log.warn('[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.');
+  public async retrieveVIN(): Promise<string | null> {
+    try {
+      if (!(await this.initializeDevice())) {
+        return null;
+      }
+
+      // Try standard request first
+      let response: ChunkedResponse | null = await this.sendCommandRaw(
+        VIN_CONSTANTS.COMMAND,
+      );
+
+      // If no response or error, try with flow control
+      if (
+        !response?.rawResponse ||
+        this.checkResponseForErrors(response.rawResponse).error
+      ) {
+        log.debug(
+          '[VINRetriever] Initial request failed, trying with flow control',
+        );
+        const flowControlResponse = await this.tryFlowControl();
+        if (flowControlResponse) {
+          response = flowControlResponse;
+        }
+      }
+
+      if (response?.rawResponse) {
+        const processedVin = this.processVINResponse(response.rawResponse);
+        if (processedVin && this.isValidVIN(processedVin)) {
+          log.info('[VINRetriever] Successfully retrieved VIN:', processedVin);
+          return processedVin;
+        }
+      }
+
+      log.warn('[VINRetriever] Failed to retrieve valid VIN');
+      return null;
+    } catch (error) {
+      log.error('[VINRetriever] VIN retrieval failed:', error);
+      return null;
     }
-    return successfulResponse;
   }
 
   /**
@@ -600,197 +631,6 @@ export class VINRetriever {
       }
     } catch (error: unknown) {
       log.error('[VINRetriever] Error processing VIN response:', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      return null;
-    }
-  }
-
-  /**
-   * Main method to retrieve the VIN. Handles initial request and potential retries with flow control.
-   */
-  public async retrieveVIN(): Promise<string | null> {
-    try {
-      log.debug('[VINRetriever] Sending initial VIN request (0902)...');
-      let response: ChunkedResponse | null = await this.sendCommandRaw('0902', {
-        timeout: 15000,
-      });
-
-      log.debug(
-        '[VINRetriever] Initial response received. Checking for errors...',
-        {
-          responseInHex: utilBytesToHex(response?.rawResponse ?? []),
-          responseInString: bytesToString(response?.rawResponse ?? []),
-        },
-      );
-
-      // Log initial rawResponse received
-      if (response?.rawResponse) {
-        // Check rawResponse instead of chunks
-        log.debug(
-          `[VINRetriever] Received initial ${response.rawResponse.length} byte arrays for 0902.`,
-        );
-        // Log combined raw string derived from rawResponse
-        const { rawString: initialRawStringForLog } =
-          this.checkResponseForErrors(response?.rawResponse);
-        log.debug(
-          '[VINRetriever] Initial Raw String Combined:',
-          // Replace non-printable ASCII characters instead of explicit control ranges
-          initialRawStringForLog.replace(/[^\x20-\x7E]/g, '.'),
-        );
-      } else {
-        log.warn('[VINRetriever] No initial rawResponse received for 0902.');
-        // If no response at all, trigger FC retry? Or just fail? Let's try FC.
-        response = await this.tryFlowControlAndRetryVIN();
-        // Add log here to indicate outcome of retry
-        if (!response) {
-          log.error(
-            '[VINRetriever] VIN retrieval failed: No response even after Flow Control adjustments.',
-          );
-          return null;
-        }
-      }
-
-      // Check initial response for errors using rawResponse
-      log.debug('[VINRetriever] About to check initial response for errors...');
-      const { error: initialError, rawString: initialRawStringChecked } =
-        this.checkResponseForErrors(response?.rawResponse);
-      log.debug('[VINRetriever] Initial response check completed.', {
-        initialError: initialError,
-        initialRawStringChecked: initialRawStringChecked
-          ? initialRawStringChecked.replace(/[^\x20-\x7E]/g, '.')
-          : 'N/A',
-      });
-
-      // If initial response had errors potentially related to flow control, attempt retry
-      if (initialError) {
-        log.debug(
-          '[VINRetriever] Initial error detected. Checking if retryable...',
-        );
-        log.warn(
-          `[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`,
-        );
-
-        // Function to check if error contains NRC 31 in any format
-        const hasNRC31 = (error: string) => {
-          const errorLower = error.toLowerCase();
-          return (
-            errorLower.includes('nrc: 31') ||
-            (errorLower.includes('mode echo') && errorLower.includes('31')) ||
-            errorLower.includes('7f 09 31') || // Add check for VIN-specific format
-            errorLower.includes('7f09 31') || // Alternative format without space
-            errorLower.includes('7f0931') // Fully concatenated format
-          );
-        };
-
-        // Determine if FC retry is warranted based on the error type
-        const retryFCErrors = [
-          'Timeout',
-          'Buffer Full',
-          'NRC: 31',
-          'NRC: 22',
-          '7F 09 31', // Add VIN-specific format
-        ];
-
-        // First check for NRC 31 specifically, then other errors
-        const isRetryableError =
-          hasNRC31(initialError) ||
-          retryFCErrors.some(e => {
-            const normalizedInitialError = initialError
-              .toLowerCase()
-              .replace(/\s+/g, ' ')
-              .trim();
-            const normalizedRetryErrorString = e
-              .toLowerCase()
-              .replace(/\s+/g, ' ')
-              .trim();
-
-            const includesResult = normalizedInitialError.includes(
-              normalizedRetryErrorString,
-            );
-            log.debug('[VINRetriever] Comparing error strings for retry:', {
-              initialError: normalizedInitialError,
-              retryError: normalizedRetryErrorString,
-              includesResult,
-              // Add raw hex pattern check for debugging
-              hasHexPattern: /7f\s*09\s*31/i.test(normalizedInitialError),
-            });
-            return includesResult;
-          });
-        log.debug('[VINRetriever] Retryable check completed.', {
-          isRetryableError,
-        });
-
-        if (isRetryableError) {
-          log.debug(
-            // This log should appear if retry is triggered
-            '[VINRetriever] Triggering Flow Control retry due to error:',
-            initialError,
-          );
-          response = await this.tryFlowControlAndRetryVIN(); // tryFlowControlAndRetryVIN returns Promise<ChunkedResponse | null>
-          // Add log here to indicate outcome of retry
-          if (!response) {
-            log.error(
-              '[VINRetriever] VIN retrieval failed even after Flow Control adjustments.',
-            );
-            return null; // FC retry also failed
-          }
-          // Check the response *after* retry for errors again using rawResponse
-          const { error: retryError } = this.checkResponseForErrors(
-            response?.rawResponse,
-          ); // Pass rawResponse
-          if (retryError) {
-            log.error(
-              `[VINRetriever] Flow control retry response still contained an error: ${retryError}`,
-            );
-            return null;
-          }
-          // Add log if retry response seems OK
-          else {
-            log.info(
-              '[VINRetriever] Flow control retry response appears valid, proceeding to process.',
-            );
-          }
-        } else {
-          log.warn(
-            '[VINRetriever] Skipping Flow Control retry because error is considered definitive:',
-            initialError,
-          );
-          return null; // Initial definitive failure
-        }
-      } else {
-        log.debug(
-          '[VINRetriever] No initial error detected. Proceeding to process response.',
-        );
-      }
-
-      // If we have a response (either initial or after FC retry)
-      if (response?.rawResponse) {
-        // Check rawResponse instead of chunks
-        log.debug(
-          `[VINRetriever] Processing final ${response.rawResponse.length} byte arrays for VIN.`,
-        );
-
-        // Pass rawResponse (byte arrays) to processVINResponse
-        const vin = this.processVINResponse(response.rawResponse);
-        if (vin) {
-          return vin; // Successfully parsed VIN
-        } else {
-          log.warn(
-            '[VINRetriever] Failed to parse VIN from the final response byte arrays.',
-          );
-          return null;
-        }
-      }
-
-      // Should not be reached if logic is correct, but as a fallback
-      log.warn(
-        '[VINRetriever] No valid response byte arrays available after all attempts.',
-      );
-      return null;
-    } catch (error: unknown) {
-      log.error('[VINRetriever] Uncaught Error during VIN retrieval process:', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
