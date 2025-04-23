@@ -3,7 +3,7 @@ import { ecuStore } from '../context/ECUStore';
 import {
   parseVinFromResponse,
   isResponseError,
-  assembleMultiFrameResponse
+  assembleMultiFrameResponse,
 } from '../utils/helpers';
 import {
   DELAYS_MS,
@@ -30,13 +30,20 @@ type ProtocolState = (typeof PROTOCOL_STATES)[keyof typeof PROTOCOL_STATES];
 
 interface FlowControlCommand {
   readonly cmd: string;
-  readonly desc: string; 
+  readonly desc: string;
   readonly timeout?: number;
+}
+
+interface FlowControlConfig {
+  readonly header: string;
+  readonly receiveFilter: string;
+  readonly flowControl: string;
+  readonly priority: number;
 }
 
 export class VINRetriever {
   static readonly SERVICE_MODE: ServiceMode = {
-    REQUEST: STANDARD_PIDS.VIN,  // '0902'
+    REQUEST: STANDARD_PIDS.VIN, // '0902'
     RESPONSE: 0x49, // 73 decimal
     NAME: 'VEHICLE_VIN',
     DESCRIPTION: 'Vehicle Identification Number',
@@ -45,6 +52,26 @@ export class VINRetriever {
 
   private static readonly MAX_RETRIES = 3;
   private static readonly DELAY_MS = 2000;
+  private static readonly FLOW_CONTROL_CONFIGS: readonly FlowControlConfig[] = [
+    {
+      header: '7E0',
+      receiveFilter: '7E8',
+      flowControl: '7E0',
+      priority: 1,
+    },
+    {
+      header: '7DF',
+      receiveFilter: '7E8',
+      flowControl: '7E0',
+      priority: 2,
+    },
+    {
+      header: '18DB33F1',
+      receiveFilter: '18DAF110',
+      flowControl: '18DA10F1',
+      priority: 3,
+    },
+  ] as const;
 
   // Lock to prevent parallel VIN retrievals
   private static isRetrieving = false;
@@ -61,6 +88,8 @@ export class VINRetriever {
   private ecuResponseHeader: string | null = null;
   private protocolState: ProtocolState = PROTOCOL_STATES.INITIALIZED;
   private isHeaderEnabled: boolean = false;
+  private currentFlowControlConfig: FlowControlConfig =
+    VINRetriever.FLOW_CONTROL_CONFIGS[0];
 
   constructor(
     sendCommand: SendCommandFunction,
@@ -98,6 +127,11 @@ export class VINRetriever {
 
   private async _initializeForVIN(): Promise<boolean> {
     try {
+      // Reset flow control first
+      await this.sendCommand('ATFCSM0');
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+      // Enable headers
       if (!this.isHeaderEnabled) {
         const response = await this.sendCommand('ATH1');
         if (!this.isValidResponse(response)) {
@@ -108,9 +142,11 @@ export class VINRetriever {
       }
 
       const currentState = ecuStore.getState();
-      if (this.isCan && 
-          typeof currentState.activeProtocol === 'number' && 
-          this.protocolState !== 'READY') {
+      if (
+        this.isCan &&
+        typeof currentState.activeProtocol === 'number' &&
+        this.protocolState !== 'READY'
+      ) {
         await this._configureForProtocol();
       }
 
@@ -119,7 +155,7 @@ export class VINRetriever {
       const errorMsg = error instanceof Error ? error.message : String(error);
       void log.error('[VINRetriever] Initialization error:', {
         error: errorMsg,
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       });
       return false;
     }
@@ -129,25 +165,27 @@ export class VINRetriever {
     return response !== null && !isResponseError(response);
   }
 
-  private isNegativeResponse(response: string): boolean {
+  private isNegativeResponse(response: string | null): boolean {
+    if (!response) return false;
+
     type NegativePattern = {
       pattern: RegExp;
       description: string;
     };
 
     const negativePatterns: readonly NegativePattern[] = [
-      { 
+      {
         pattern: /7F\s*09\s*([0-9A-F]{2})/i,
-        description: 'General negative response'
+        description: 'General negative response',
       },
       {
         pattern: /7F\s*0[19]\s*31/i,
-        description: 'Request out of range'
+        description: 'Request out of range',
       },
       {
         pattern: /7F\s*09\s*1[12]/i,
-        description: 'Service/subfunction not supported'
-      }
+        description: 'Service/subfunction not supported',
+      },
     ] as const;
 
     return negativePatterns.some(({ pattern, description }) => {
@@ -157,7 +195,7 @@ export class VINRetriever {
           type: description,
           pattern: pattern.source,
           response,
-          code: match[1] || 'unknown'
+          code: match[1] || 'unknown',
         });
         return true;
       }
@@ -183,26 +221,44 @@ export class VINRetriever {
    * Configure protocol-specific settings for VIN retrieval
    */
   private async _configureForProtocol(): Promise<void> {
-    if (!this.isCan || !this.ecuResponseHeader) {
-      void log.debug(
-        '[VINRetriever] Skipping protocol config - not CAN or no ECU header',
-      );
+    if (!this.isCan) {
+      void log.debug('[VINRetriever] Skipping protocol config - not CAN');
       return;
     }
 
-    const flowControlCommands = [
-      { cmd: `ATFCSH${this.ecuResponseHeader}`, desc: 'Set FC Header' },
-      { cmd: 'ATFCSD300008', desc: 'Set FC Data (BS=0,ST=8ms)' },
-      { cmd: 'ATFCSM1', desc: 'Enable FC' },
-    ];
-
-    for (const { cmd, desc } of flowControlCommands) {
+    // Try each flow control configuration
+    for (const config of VINRetriever.FLOW_CONTROL_CONFIGS) {
       try {
-        void log.debug(`[VINRetriever] ${desc}: ${cmd}`);
-        await this.sendCommand(cmd);
+        // Set header
+        await this.sendCommand(`ATSH${config.header}`);
         await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+        // Set receive filter
+        await this.sendCommand(`ATCRA${config.receiveFilter}`);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+        // Configure flow control
+        await this.sendCommand(`ATFCSH${config.flowControl}`);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+        // Test configuration with a simple request
+        const testResponse = await this.sendCommand('0100');
+        if (
+          this.isValidResponse(testResponse) &&
+          !this.isNegativeResponse(testResponse)
+        ) {
+          this.currentFlowControlConfig = config;
+          void log.info(
+            '[VINRetriever] Found working flow control config:',
+            config,
+          );
+          return;
+        }
+
+        void log.debug('[VINRetriever] Flow control config failed:', config);
       } catch (error) {
-        void log.warn(`[VINRetriever] Flow Control command failed: ${cmd}`, {
+        void log.warn('[VINRetriever] Error testing flow control config:', {
+          config,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -210,37 +266,52 @@ export class VINRetriever {
   }
 
   private async _configureFlowControl(): Promise<boolean> {
-    if (!this.isCan || !this.ecuResponseHeader) {
-      void log.debug('[VINRetriever] Skipping flow control - not CAN or no ECU header');
+    if (!this.isCan) {
+      void log.debug('[VINRetriever] Skipping flow control - not CAN');
       return false;
     }
 
+    const { header, receiveFilter, flowControl } =
+      this.currentFlowControlConfig;
+
     const fcCommands: readonly FlowControlCommand[] = [
-      { cmd: 'ATFCSH7E8', desc: 'Set Flow Control Send Header', timeout: 2000 },
-      { cmd: 'ATFCRH7E0', desc: 'Set Flow Control Receive Header', timeout: 2000 },
-      { cmd: 'ATFCSD300010', desc: 'Set Flow Control Send Data (BS=48,ST=16ms)', timeout: 2000 },
+      {
+        cmd: `ATFCSH${flowControl}`,
+        desc: 'Set Flow Control Send Header',
+        timeout: 2000,
+      },
+      {
+        cmd: `ATCRA${receiveFilter}`,
+        desc: 'Set Flow Control Receive Filter',
+        timeout: 2000,
+      },
+      {
+        cmd: 'ATFCSD300010',
+        desc: 'Set Flow Control Send Data (BS=48,ST=16ms)',
+        timeout: 2000,
+      },
       { cmd: 'ATFCSM1', desc: 'Enable Flow Control', timeout: 2000 },
       { cmd: 'ATST64', desc: 'Set timeout to 100ms * 64', timeout: 1000 },
-      { cmd: 'ATSTFF', desc: 'Set maximum response timeout', timeout: 1000 }
+      { cmd: 'ATSTFF', desc: 'Set maximum response timeout', timeout: 1000 },
     ] as const;
 
-    for (const {cmd, desc, timeout} of fcCommands) {
+    for (const { cmd, desc, timeout } of fcCommands) {
       try {
         void log.debug(`[VINRetriever] ${desc}: ${cmd}`);
         const response = await this.sendCommand(cmd);
-        
+
         if (!response || isResponseError(response)) {
           void log.warn(`[VINRetriever] Flow Control command failed: ${cmd}`);
           return false;
         }
-        
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+        await this.delay(timeout ?? DELAYS_MS.COMMAND_SHORT);
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         void log.error(`[VINRetriever] Flow Control error:`, {
           command: cmd,
           error: errorMsg,
-          stack: error instanceof Error ? error.stack : undefined
+          stack: error instanceof Error ? error.stack : undefined,
         });
         return false;
       }
@@ -249,25 +320,33 @@ export class VINRetriever {
     return true;
   }
 
-  private async _sendVinRequest(request: string): Promise<ChunkedResponse | null> {
+  private async _sendVinRequest(
+    request: string,
+  ): Promise<ChunkedResponse | null> {
     try {
       const fcConfigured = await this._configureFlowControl();
       if (!fcConfigured) {
         void log.warn('[VINRetriever] Flow control configuration failed');
       }
 
+      // Set header before request
+      if (this.currentFlowControlConfig) {
+        await this.sendCommand(`ATSH${this.currentFlowControlConfig.header}`);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      }
+
       // Remove timeout parameter, let device handle timing
       const response = await this.bluetoothSendCommandRawChunked(request);
-      
+
       // Disable flow control after request
       await this.sendCommand('ATFCSM0');
-      
+
       return response;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       void log.error(`[VINRetriever] VIN request failed: ${request}`, {
         error: errorMsg,
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       });
       return null;
     }
@@ -276,7 +355,7 @@ export class VINRetriever {
   /**
    * Retrieves the Vehicle Identification Number (VIN) from the ECU
    * Using ISO-15765 protocol for CAN networks or ISO-14230 for K-Line
-   * 
+   *
    * @returns Promise resolving to 17-character VIN string or null if retrieval fails
    */
   public async retrieveVIN(): Promise<string | null> {
@@ -298,52 +377,58 @@ export class VINRetriever {
       // Update protocol settings from store
       this.protocolNumber = currentState.activeProtocol ?? PROTOCOL.AUTO;
       this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
-      this.ecuResponseHeader = currentState.selectedEcuAddress ?? 
-                             currentState.detectedEcuAddresses?.[0] ?? 
-                             null;
+      this.ecuResponseHeader =
+        currentState.selectedEcuAddress ??
+        currentState.detectedEcuAddresses?.[0] ??
+        null;
 
       let attempt = 0;
 
       while (attempt < VINRetriever.MAX_RETRIES) {
         attempt++;
-        
+
         try {
           await this._initializeForVIN();
 
-          const vinRequests = [
-            '0902',      // Standard
-            '0902FF',    // Extended
-            '09020000'   // Padded
-          ];
+          // Try each flow control config
+          for (const config of VINRetriever.FLOW_CONTROL_CONFIGS) {
+            this.currentFlowControlConfig = config;
 
-          for (const request of vinRequests) {
-            const rawResponse = await this._sendVinRequest(request);
-            if (!rawResponse) continue;
+            const vinRequests = [
+              '0902', // Standard
+              '0902FF', // Extended
+              '09020000', // Padded
+            ];
 
-            // Process response...
-            const hexResponse = this.processResponseChunks(rawResponse.chunks);
-            void log.debug('[VINRetriever] Hex response:', hexResponse);
+            for (const request of vinRequests) {
+              const rawResponse = await this._sendVinRequest(request);
+              if (!rawResponse) continue;
 
-            if (this.isNegativeResponse(hexResponse)) {
-              void log.warn(`[VINRetriever] ECU rejected ${request}`);
-              continue; 
-            }
+              // Process response...
+              const hexResponse = this.processResponseChunks(
+                rawResponse.chunks,
+              );
+              void log.debug('[VINRetriever] Hex response:', hexResponse);
 
-            const vin = parseVinFromResponse(hexResponse);
-            if (vin) {
-              void log.info(`[VINRetriever] Found VIN: ${vin}`);
-              return vin;
+              if (this.isNegativeResponse(hexResponse)) {
+                void log.warn(`[VINRetriever] ECU rejected ${request}`);
+                continue;
+              }
+
+              const vin = parseVinFromResponse(hexResponse);
+              if (vin) {
+                void log.info(`[VINRetriever] Found VIN: ${vin}`);
+                return vin;
+              }
             }
           }
 
-          // Configure protocol using text-based AT commands
           if (attempt < VINRetriever.MAX_RETRIES) {
-            await this._configureForProtocol();
             await this.delay(VINRetriever.DELAY_MS);
           }
-
         } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
           void log.error(`[VINRetriever] Error on attempt ${attempt}:`, {
             error: errorMsg,
             stack: error instanceof Error ? error.stack : undefined,
@@ -355,9 +440,10 @@ export class VINRetriever {
         }
       }
 
-      void log.error('[VINRetriever] Failed to retrieve VIN after all attempts');
+      void log.error(
+        '[VINRetriever] Failed to retrieve VIN after all attempts',
+      );
       return null;
-
     } finally {
       VINRetriever.isRetrieving = false;
     }
@@ -376,7 +462,7 @@ export class VINRetriever {
   private convertChunkToHex(chunk: Uint8Array): string {
     if (!chunk?.length) return '';
 
-    const validBytes = new Set<number>([0x0D, 0x3E, 0x20]); // Control chars to filter
+    const validBytes = new Set<number>([0x0d, 0x3e, 0x20]); // Control chars to filter
 
     return Array.from(chunk)
       .map((byte: number): string => {
@@ -420,12 +506,11 @@ export class VINRetriever {
       }
 
       return assembleMultiFrameResponse(hexString);
-      
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       void log.error('[VINRetriever] Error processing chunks:', {
         error: errorMsg,
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       });
       return '';
     }
