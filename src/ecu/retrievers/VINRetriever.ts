@@ -13,7 +13,11 @@ import {
 } from '../utils/constants';
 
 import type { ServiceMode } from './types';
-import type { SendCommandFunction, ChunkedResponse } from '../utils/types';
+import type {
+  SendCommandFunction,
+  SendCommandFunctionWithResponse, // This is the function type
+  ChunkedResponse, // This is the response type
+} from '../utils/types';
 
 // Simplified protocol constants
 const PROTOCOL_TYPES = {
@@ -77,10 +81,8 @@ export class VINRetriever {
   private static isRetrieving = false;
 
   private readonly sendCommand: SendCommandFunction;
-  private readonly bluetoothSendCommandRawChunked: (
-    command: string,
-    timeout?: number | { timeout?: number },
-  ) => Promise<ChunkedResponse>;
+  // This property holds the function itself
+  private readonly bluetoothSendCommandRawChunked: SendCommandFunctionWithResponse;
 
   private isCan: boolean = false;
   private protocolNumber: PROTOCOL | number = PROTOCOL.AUTO;
@@ -93,10 +95,8 @@ export class VINRetriever {
 
   constructor(
     sendCommand: SendCommandFunction,
-    bluetoothSendCommandRawChunked: (
-      command: string,
-      timeout?: number | { timeout?: number },
-    ) => Promise<ChunkedResponse>,
+    // The constructor expects a function matching the SendCommandFunctionWithResponse type
+    bluetoothSendCommandRawChunked: SendCommandFunctionWithResponse,
   ) {
     this.sendCommand = sendCommand;
     this.bluetoothSendCommandRawChunked = bluetoothSendCommandRawChunked;
@@ -331,6 +331,7 @@ export class VINRetriever {
     return true;
   }
 
+  // _sendVinRequest already correctly returns Promise<ChunkedResponse | null>
   private async _sendVinRequest(
     request: string,
   ): Promise<ChunkedResponse | null> {
@@ -360,16 +361,25 @@ export class VINRetriever {
           }
 
           // Send the request with extended timeout
-          const response = await this.bluetoothSendCommandRawChunked(
-            reqFormat,
-            { timeout: 6000 },
-          );
+          // Calling the function returns Promise<ChunkedResponse | null>
+          const response: ChunkedResponse | null =
+            await this.bluetoothSendCommandRawChunked(reqFormat, {
+              timeout: 6000,
+            });
 
-          if (response && response.chunks.length > 0) {
-            return response;
+          // Check if the response is valid ChunkedResponse (not null)
+          if (
+            response &&
+            Array.isArray(response.chunks) &&
+            response.chunks.length > 0
+          ) {
+            return response; // Return the ChunkedResponse object
           }
 
-          void log.debug(`[VINRetriever] No response for format: ${reqFormat}`);
+          // Handle null or invalid response
+          void log.debug(
+            `[VINRetriever] No valid response for format: ${reqFormat}`,
+          );
           await this.delay(DELAYS_MS.COMMAND_SHORT);
         } catch (error) {
           void log.warn(
@@ -446,12 +456,15 @@ export class VINRetriever {
             ];
 
             for (const request of vinRequests) {
-              const rawResponse = await this._sendVinRequest(request);
-              if (!rawResponse) continue;
+              // rawResponse will be ChunkedResponse | null
+              const rawResponse: ChunkedResponse | null =
+                await this._sendVinRequest(request);
+              if (!rawResponse) continue; // Skip if null
 
               // Process response...
+              // Accessing rawResponse.chunks is now safe because rawResponse is ChunkedResponse
               const hexResponse = this.processResponseChunks(
-                rawResponse.chunks,
+                rawResponse.chunks, // Accessing chunks property of ChunkedResponse
               );
               void log.debug('[VINRetriever] Hex response:', hexResponse);
 
@@ -527,6 +540,7 @@ export class VINRetriever {
       .join('');
   }
 
+  // processResponseChunks already correctly accepts readonly Uint8Array[]
   private processResponseChunks(chunks: readonly Uint8Array[]): string {
     if (!Array.isArray(chunks) || !chunks.length) {
       void log.warn('[VINRetriever] Invalid or empty chunks array');

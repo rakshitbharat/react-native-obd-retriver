@@ -390,23 +390,23 @@ export type SendCommandFunction = (
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
+/**
+ * Represents the response structure containing raw data chunks.
+ * Matches the structure returned by react-native-bluetooth-obd-manager's sendCommandRawChunked.
+ */
+export interface ChunkedResponse {
+  /** Array of raw data chunks received. */
+  chunks: Uint8Array[];
+  /** Total number of bytes received across all chunks. */
+  totalBytes: number;
+  /** The command that generated this response. */
+  command: string;
+}
+
 export type SendCommandFunctionWithResponse = (
   command: string,
   options?: number | { timeout?: number },
 ) => Promise<ChunkedResponse | null>; // Returns the response string or null on failure/timeout
-
-/**
- * Interface representing chunked Bluetooth response data.
- * Each element in the array represents a distinct data packet received.
- */
-export interface ChunkedResponse {
-  /** Array of raw data chunks */
-  chunks: Uint8Array[];
-  /** Total number of bytes across all chunks */
-  totalBytes: number;
-  /** Original command that generated this response */
-  command: string;
-}
 
 /**
  * Configuration for adaptive timing in OBD communication
