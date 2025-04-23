@@ -390,6 +390,11 @@ export type SendCommandFunction = (
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
+export type SendCommandFunctionWithResponse = (
+  command: string,
+  options?: number | { timeout?: number },
+) => Promise<ChunkedResponse | null>; // Returns the response string or null on failure/timeout
+
 /**
  * Interface representing chunked Bluetooth response data.
  * Each element in the array represents a distinct data packet received.
