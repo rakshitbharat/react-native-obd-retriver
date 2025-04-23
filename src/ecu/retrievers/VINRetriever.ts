@@ -54,13 +54,13 @@ export class VINRetriever {
   private static readonly DELAY_MS = 2000;
   private static readonly FLOW_CONTROL_CONFIGS: readonly FlowControlConfig[] = [
     {
-      header: '7E0',
+      header: '7DF', // Try broadcast address first
       receiveFilter: '7E8',
       flowControl: '7E0',
       priority: 1,
     },
     {
-      header: '7DF',
+      header: '7E0',
       receiveFilter: '7E8',
       flowControl: '7E0',
       priority: 2,
@@ -271,28 +271,39 @@ export class VINRetriever {
       return false;
     }
 
+    // First reset any existing flow control
+    await this.sendCommand('ATFCSM0');
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
     const { header, receiveFilter, flowControl } =
       this.currentFlowControlConfig;
 
     const fcCommands: readonly FlowControlCommand[] = [
-      {
-        cmd: `ATFCSH${flowControl}`,
-        desc: 'Set Flow Control Send Header',
-        timeout: 2000,
-      },
+      // Set protocol timing first
+      { cmd: 'ATAT1', desc: 'Enable adaptive timing', timeout: 1000 },
+      { cmd: 'ATST64', desc: 'Set timeout to 100ms * 64', timeout: 1000 },
+      { cmd: 'ATSTFF', desc: 'Set maximum response timeout', timeout: 1000 },
+
+      // Then configure headers and filters
+      { cmd: `ATSH${header}`, desc: 'Set Header', timeout: 1000 },
       {
         cmd: `ATCRA${receiveFilter}`,
         desc: 'Set Flow Control Receive Filter',
-        timeout: 2000,
+        timeout: 1000,
       },
       {
-        cmd: 'ATFCSD300010',
-        desc: 'Set Flow Control Send Data (BS=48,ST=16ms)',
-        timeout: 2000,
+        cmd: `ATFCSH${flowControl}`,
+        desc: 'Set Flow Control Send Header',
+        timeout: 1000,
       },
-      { cmd: 'ATFCSM1', desc: 'Enable Flow Control', timeout: 2000 },
-      { cmd: 'ATST64', desc: 'Set timeout to 100ms * 64', timeout: 1000 },
-      { cmd: 'ATSTFF', desc: 'Set maximum response timeout', timeout: 1000 },
+
+      // Finally set flow control parameters
+      {
+        cmd: 'ATFCSD300000',
+        desc: 'Set Flow Control Send Data (no delay)',
+        timeout: 1000,
+      },
+      { cmd: 'ATFCSM1', desc: 'Enable Flow Control', timeout: 1000 },
     ] as const;
 
     for (const { cmd, desc, timeout } of fcCommands) {
@@ -324,24 +335,56 @@ export class VINRetriever {
     request: string,
   ): Promise<ChunkedResponse | null> {
     try {
+      // Configure flow control
       const fcConfigured = await this._configureFlowControl();
       if (!fcConfigured) {
         void log.warn('[VINRetriever] Flow control configuration failed');
       }
 
-      // Set header before request
-      if (this.currentFlowControlConfig) {
-        await this.sendCommand(`ATSH${this.currentFlowControlConfig.header}`);
-        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      // Try different request formats
+      const requestFormats = [
+        request, // Original format
+        request.padEnd(8, '0'), // Padded to 8 bytes
+        `${request}1`, // With length = 1
+        `${request}00`, // With length = 0
+      ];
+
+      for (const reqFormat of requestFormats) {
+        try {
+          // Set header before each attempt
+          if (this.currentFlowControlConfig) {
+            await this.sendCommand(
+              `ATSH${this.currentFlowControlConfig.header}`,
+            );
+            await this.delay(DELAYS_MS.COMMAND_SHORT);
+          }
+
+          // Send the request with extended timeout
+          const response = await this.bluetoothSendCommandRawChunked(
+            reqFormat,
+            { timeout: 6000 },
+          );
+
+          if (response && response.chunks.length > 0) {
+            return response;
+          }
+
+          void log.debug(`[VINRetriever] No response for format: ${reqFormat}`);
+          await this.delay(DELAYS_MS.COMMAND_SHORT);
+        } catch (error) {
+          void log.warn(
+            `[VINRetriever] Request failed for format: ${reqFormat}`,
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
       }
 
-      // Remove timeout parameter, let device handle timing
-      const response = await this.bluetoothSendCommandRawChunked(request);
-
-      // Disable flow control after request
+      // Disable flow control after all attempts
       await this.sendCommand('ATFCSM0');
 
-      return response;
+      return null;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       void log.error(`[VINRetriever] VIN request failed: ${request}`, {
@@ -388,11 +431,13 @@ export class VINRetriever {
         attempt++;
 
         try {
+          // Initialize and verify headers are enabled
           await this._initializeForVIN();
 
           // Try each flow control config
           for (const config of VINRetriever.FLOW_CONTROL_CONFIGS) {
             this.currentFlowControlConfig = config;
+            void log.info(`[VINRetriever] Trying flow control config:`, config);
 
             const vinRequests = [
               '0902', // Standard
@@ -421,6 +466,9 @@ export class VINRetriever {
                 return vin;
               }
             }
+
+            // Add delay between config attempts
+            await this.delay(DELAYS_MS.COMMAND_LONG);
           }
 
           if (attempt < VINRetriever.MAX_RETRIES) {
