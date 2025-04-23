@@ -391,22 +391,41 @@ export type SendCommandFunction = (
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
 /**
+ * Represents the response structure containing raw data chunks,
+ * as returned directly by the react-native-bluetooth-obd-manager hook.
+ * This type might differ slightly from the internal ChunkedResponse.
+ */
+export interface BluetoothChunkedResponse {
+  /** Array of raw data chunks received. */
+  chunks: Uint8Array[];
+  /** Optional raw response as array of number arrays (bytes per chunk). */
+  rawResponse?: number[][];
+  // Note: command and totalBytes are NOT expected from the hook.
+}
+
+/**
  * Represents the response structure containing raw data chunks.
- * Matches the structure returned by react-native-bluetooth-obd-manager's sendCommandRawChunked.
+ * This is the type used internally within react-native-obd-retriever.
  */
 export interface ChunkedResponse {
   /** Array of raw data chunks received. */
   chunks: Uint8Array[];
-  /** Total number of bytes received across all chunks. */
-  totalBytes: number;
   /** The command that generated this response. */
   command: string;
+  /** Optional raw response as array of number arrays (bytes per chunk). */
+  rawResponse?: number[][];
+  /** Total number of bytes received across all chunks. */
+  totalBytes: number;
 }
 
+/**
+ * Type definition for a function that sends a command and returns a raw, chunked response.
+ * This function returns the local ChunkedResponse type.
+ */
 export type SendCommandFunctionWithResponse = (
   command: string,
   options?: number | { timeout?: number },
-) => Promise<ChunkedResponse | null>; // Returns the response string or null on failure/timeout
+) => Promise<ChunkedResponse>; // Returns the local ChunkedResponse type
 
 /**
  * Configuration for adaptive timing in OBD communication
