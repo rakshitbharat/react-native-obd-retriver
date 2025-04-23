@@ -584,31 +584,35 @@ export class VINRetriever {
 
   private async sendVINRequest(attempt = 1): Promise<ChunkedResponse | null> {
     try {
-      // Try first without flow control
+      // Try first without flow control and with longer initial delay
       await this.sendCommand('ATFCSM0');
-      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
+      await this.delay(500); // Increased initial delay
 
       // Try each header in sequence until we get a response
       for (const header of VIN_CONSTANTS.ALTERNATE_HEADERS) {
         log.debug(`[VINRetrieverLIB] Trying VIN request with header: ${header}`);
         
-        // Set header
+        // Set header and wait longer
         await this.sendCommand(`ATSH${header}`);
-        await this.delay(50);
+        await this.delay(200); // Increased delay after setting header
         
-        // Send VIN request without timeout
+        // Send VIN request - fix options format
         let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
-          raw: true
+          raw: true,
+          // Remove timeout completely for VIN request
         });
 
-        // If we got any response, try to process it
         if (response?.rawResponse && response.rawResponse.length > 0) {
-          log.debug(`[VINRetrieverLIB] Got response with header ${header}`);
-          return response;
+          // Add check for NO DATA response
+          const validation = this.checkResponseForErrors(response.rawResponse);
+          if (!validation.error || !validation.error.includes('No Data')) {
+            log.debug(`[VINRetrieverLIB] Got response with header ${header}`);
+            return response;
+          }
         }
 
-        // Small delay before trying next header
-        await this.delay(100);
+        // Increased delay between header attempts
+        await this.delay(300);
       }
 
       // If no response with any header, try flow control
