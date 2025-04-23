@@ -1,8 +1,8 @@
 import { log } from '../../utils/logger';
 import { RESPONSE_KEYWORDS, PROTOCOL } from '../utils/constants';
 import { isResponseError } from '../utils/helpers';
-import { bytesToHex } from '../utils/ecuUtils';
-import { ecuStore } from '../context/ECUStore';
+import { hexToBytes, bytesToHex, bytesToString } from '../utils/ecuUtils';
+import { ecuStore, getStore } from '../context/ECUStore';
 import type {
   SendCommandFunction,
   SendCommandRawFunction,
@@ -65,6 +65,9 @@ const VIN_CONSTANTS: VINConstants = {
     { fcsh: '', fcsd: '300000', fcsm: '0', desc: 'Standard Mode 0' },
     { fcsh: '', fcsd: '300008', fcsm: '1', desc: 'Extended Wait Mode 1' },
     { fcsh: '', fcsd: '300100', fcsm: '1', desc: 'Block Size 1 Mode 1' },
+    // Add these new configurations
+    { fcsh: '', fcsd: '300400', fcsm: '1', desc: 'Block Size 4 Mode 1' }, // Different block size
+    { fcsh: '', fcsd: '300004', fcsm: '1', desc: 'Separation Time 4ms' }, // Shorter separation time
   ],
 } as const;
 
@@ -73,8 +76,10 @@ export class VINRetriever {
   private sendCommandRaw: SendCommandRawFunction;
   private currentAdaptiveDelay: number;
   private currentATMode: 0 | 1 | 2;
-
   private currentFunctionalHeader: string | null = null;
+  // Update type definitions to be explicit about null
+  private currentProtocol: PROTOCOL | null = null;
+  private selectedEcuAddress: string | null = null;
 
   constructor(
     sendCommand: SendCommandFunction,
@@ -147,33 +152,12 @@ export class VINRetriever {
    * Convert hex string to ASCII, filtering for valid VIN characters.
    */
   private hexToAscii(hex: string): string {
-    let str = '';
-    // Ensure hex string length is even, remove non-hex chars first
-    const cleanHex = hex.replace(/[^0-9A-F]/gi, '');
-    const finalHex =
-      cleanHex.length % 2 !== 0 ? cleanHex.slice(0, -1) : cleanHex;
+    // Use ecuUtils functions instead of manual conversion
+    const bytes = hexToBytes(hex);
+    const str = bytesToString(bytes);
 
-    for (let i = 0; i < finalHex.length; i += 2) {
-      try {
-        const charCode = parseInt(finalHex.substring(i, i + 2), 16);
-        if (isNaN(charCode)) continue;
-        // Filter for standard printable ASCII relevant to VIN (alphanumeric)
-        if (
-          (charCode >= 48 && charCode <= 57) || // 0-9
-          (charCode >= 65 && charCode <= 90) // A-Z (uppercase)
-          // (charCode >= 97 && charCode <= 122) // a-z (allow lowercase if needed, but VINs are usually uppercase)
-        ) {
-          str += String.fromCharCode(charCode);
-        }
-      } catch (e) {
-        log.warn(
-          `[VINRetrieverLIB] Error parsing hex pair: ${finalHex.substring(i, i + 2)}`,
-          e,
-        );
-      }
-    }
-    // Only return if it looks like a potential VIN start, trim spaces added by String.fromCharCode maybe?
-    return str.trim();
+    // Filter for VIN-valid characters only (0-9, A-Z except IOQ)
+    return str.replace(/[^A-HJ-NPR-Z0-9]/gi, '').toUpperCase();
   }
 
   /**
@@ -188,10 +172,8 @@ export class VINRetriever {
    * Now uses rawResponse (array of byte arrays).
    */
   private checkResponseForErrors(
-    rawResponseBytes: number[][] | null | undefined, // Match updated type
+    rawResponseBytes: number[][] | null | undefined,
   ): ResponseValidation {
-    // ... existing implementation ...
-    // Ensure rawResponseBytes is handled correctly with the updated type
     const result: ResponseValidation = {
       error: null,
       rawString: '',
@@ -204,28 +186,17 @@ export class VINRetriever {
     }
 
     try {
-      let combinedBytes: number[] = [];
-      for (const byteArray of rawResponseBytes) {
-        // Convert Uint8Array to number[] if necessary - This part might be redundant now if rawResponse is number[][]
-        // Keep it for safety in case chunks still contain Uint8Array
-        const numbers =
-          byteArray instanceof Uint8Array ? Array.from(byteArray) : byteArray;
-        if (Array.isArray(numbers)) {
-          combinedBytes = combinedBytes.concat(numbers);
-        } else {
-          log.warn(
-            '[VINRetrieverLIB] Unexpected format in rawResponseBytes:',
-            byteArray,
-          );
-        }
-      }
-      result.rawString = String.fromCharCode(...combinedBytes);
+      // Convert all chunks to a single string using ecuUtils
+      result.rawString = rawResponseBytes
+        .map(chunk => bytesToString(chunk))
+        .join('');
+
+      // Clean hex using ecuUtils functions
+      const combinedBytes = rawResponseBytes.flat();
+      result.cleanHex = bytesToHex(combinedBytes);
     } catch (e) {
-      log.error(
-        '[VINRetrieverLIB] Error combining/decoding rawResponseBytes',
-        e,
-      );
-      result.error = 'Byte array processing error';
+      log.error('[VINRetrieverLIB] Error processing response bytes:', e);
+      result.error = 'Byte processing error';
       return result;
     }
 
@@ -234,11 +205,6 @@ export class VINRetriever {
       .replace(/[>\r\n]/g, ' ') // Replace prompt/newlines with space
       .replace(/\s+/g, ' ') // Normalize whitespace
       .trim();
-
-    // More thorough cleaning for hex processing
-    result.cleanHex = basicCleaned
-      .replace(/[^0-9A-F]/gi, '') // Keep only hex characters
-      .toUpperCase();
 
     // --- Specific Error Checks ---
     if (isResponseError(basicCleaned)) {
@@ -463,14 +429,11 @@ export class VINRetriever {
   }
 
   private async initializeDevice(): Promise<boolean> {
-    log.info('[VINRetrieverLIB] Initializing device for VIN retrieval...');
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const state: any = ecuStore.getState(); // Use any to bypass type checking
-      log.debug('[VINRetrieverLIB] Current ECU State:', state);
+      const state = ecuStore.getState();
+      // Add null check and type safety for address
+      this.selectedEcuAddress = state.selectedEcuAddress || null;
 
-      // 1. Check connection status and protocol
-      // Handle potential null for activeProtocol
       const currentProtocol = state.activeProtocol;
       if (currentProtocol === null) {
         log.error(
@@ -478,6 +441,9 @@ export class VINRetriever {
         );
         return false;
       }
+
+      // Store protocol only after validation
+      this.currentProtocol = currentProtocol;
       const isCanProtocol = currentProtocol >= 6 && currentProtocol <= 9;
       if (state.status !== 'CONNECTED' || !isCanProtocol) {
         log.error(
@@ -601,98 +567,39 @@ export class VINRetriever {
   }
 
   private async sendVINRequest(attempt = 1): Promise<ChunkedResponse | null> {
-    log.debug(
-      `[VINRetrieverLIB] Sending VIN request (attempt ${attempt}/${VIN_CONSTANTS.RETRIES})`,
-    );
     try {
-      // Reset headers and filters before each attempt
-      await this.sendCommand('ATAT2'); // Force adaptive timing 2
+      // Try first without flow control
+      await this.sendCommand('ATFCSM0');
       await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
 
-      await this.sendCommand('ATH1'); // Ensure headers on
-      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
+      let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND);
 
-      // Set broadcast ID for request
-      await this.sendCommand('ATSH7DF');
-      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
-
-      // Update receive filter
-      await this.sendCommand('ATCRA7E8');
-      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
-
-      // Send VIN request with adjusted parameters
-      const response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
-        timeout: VIN_CONSTANTS.TIMEOUT,
-        raw: true,
-      });
-
-      // Rest of function remains the same...
-      // Check if rawResponse exists and is not empty
-      const hasData =
-        response?.rawResponse &&
-        response.rawResponse.some(chunk => chunk.length > 0);
-      this.adjustAdaptiveTiming(hasData ?? false); // Adjust timing based on whether *any* data was received
-
-      if (hasData && response.rawResponse) {
-        // Add check for rawResponse existence
-        const { error, cleanHex } = this.checkResponseForErrors(
-          response.rawResponse,
-        ); // Get cleanHex too
-
-        // Check if the response is NOT a definite error (like CAN ERROR, BUS ERROR, ?, etc.)
-        // Allow 'No Data', 'Timeout', 'Negative Response' as they might be recoverable or expected in some cases before flow control
-        const isRecoverableOrNoError =
-          !error ||
-          error === 'No Data' ||
-          error === 'Timeout' ||
-          error.includes('Negative Response') ||
-          error.includes('Potential Negative Response');
-
-        if (isRecoverableOrNoError) {
-          // Also check if we actually got the expected response code (4902) even if errors were flagged
-          const hasVINResponseCode = cleanHex.includes('4902');
-
-          if (hasVINResponseCode) {
-            log.debug(
-              `[VINRetrieverLIB] VIN request attempt ${attempt} got positive response marker (4902). Error status: ${error || 'None'}`,
-            );
-            return response; // Return response if 4902 is present
-          } else if (!error) {
-            log.debug(
-              `[VINRetrieverLIB] VIN request attempt ${attempt} got response without errors, but no 4902 marker. Hex: ${cleanHex}`,
-            );
-            // Consider returning response here too, maybe processVINResponse can handle it?
-            // For now, let's treat lack of 4902 as failure for standard request.
-          } else {
-            log.warn(
-              `[VINRetrieverLIB] VIN request attempt ${attempt} resulted in recoverable error: ${error}. Hex: ${cleanHex}`,
-            );
-            // Proceed to retry or flow control
-          }
-        } else {
-          // Definite, non-recoverable error
-          log.error(
-            `[VINRetrieverLIB] VIN request attempt ${attempt} failed with non-recoverable error: ${error}. Hex: ${cleanHex}`,
-          );
-          // No retry if it's a definite error like CAN ERROR? Maybe retry anyway? Let's keep retry logic.
-        }
-      } else {
-        log.warn(
-          `[VINRetrieverLIB] VIN request attempt ${attempt} got invalid/empty/timeout response.`,
-        );
-        // Adjust timing already happened based on hasData
-      }
-
-      // Retry logic
-      if (attempt < VIN_CONSTANTS.RETRIES) {
-        await this.delay(VIN_CONSTANTS.DELAYS.INIT); // Use adaptive delay before retry
-        return this.sendVINRequest(attempt + 1);
-      }
-
-      log.error(
-        `[VINRetrieverLIB] VIN request failed after ${VIN_CONSTANTS.RETRIES} attempts.`,
+      log.debug(
+        `[VINRetrieverLIB] sendVINRequest attempt ${attempt}: response:`,
+        response,
       );
-      return null;
+
+      // Check if we need flow control based on response
+      if (
+        !response?.rawResponse ||
+        response.rawResponse.length === 0 ||
+        this.checkResponseForErrors(response.rawResponse).error
+      ) {
+        // Add null checks before passing to tryFlowControl
+        if (!this.currentProtocol) {
+          log.error(
+            '[VINRetrieverLIB] Cannot try flow control: No protocol set',
+          );
+          return null;
+        }
+
+        response = await this.tryFlowControl(
+          this.currentProtocol, // Now guaranteed to be non-null
+          this.selectedEcuAddress, // Can be null, tryFlowControl handles it
+        );
+      }
+
+      return response;
     } catch (error) {
       this.adjustAdaptiveTiming(false); // Adjust timing on error
       log.error('[VINRetrieverLIB] VIN request failed with exception:', error);
@@ -706,21 +613,14 @@ export class VINRetriever {
   }
 
   public async retrieveVIN(): Promise<string | null> {
-    log.info('[VINRetrieverLIB] Attempting to retrieve VIN...');
     try {
-      // Capture state *before* async operations within retrieveVIN
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const currentState: any = ecuStore.getState(); // Use any to bypass type checking
+      const currentState = getStore();
       const currentProtocol = currentState.activeProtocol;
-      const selectedEcuAddress = currentState.selectedEcuAddress;
 
-      log.info(
-        JSON.stringify({
-          currentProtocol,
-          selectedEcuAddress,
-          currentState,
-        }),
-      );
+      if (!currentProtocol) {
+        log.error('[VINRetrieverLIB] Cannot retrieve VIN: No protocol set');
+        return null;
+      }
 
       if (!(await this.initializeDevice())) {
         log.error(
@@ -756,10 +656,9 @@ export class VINRetriever {
       // If standard request failed OR didn't contain 4902, try variations with flow control
       if (needsFlowControl) {
         log.info('[VINRetrieverLIB] Trying flow control configurations...');
-        // Pass the captured state to tryFlowControl
         response = await this.tryFlowControl(
-          currentProtocol,
-          selectedEcuAddress,
+          currentProtocol, // Now guaranteed to be non-null
+          currentState.selectedEcuAddress || null,
         );
       }
 
@@ -797,24 +696,19 @@ export class VINRetriever {
   }
 
   /**
-   * Processes the raw byte arrays from the adapter to extract the VIN string.
-   * Handles multi-frame ISO-TP responses.
+   * Process VIN response using improved byte handling
    */
   private processVINResponse(rawResponseBytes: number[][]): string | null {
-    log.debug('[VINRetrieverLIB] Starting processVINResponse...');
     try {
-      // Convert bytes to string
+      // Convert response to string using ecuUtils
       const rawString = rawResponseBytes
-        .map(bytes => String.fromCharCode(...bytes))
+        .map(chunk => bytesToString(chunk))
         .join('');
 
-      log.debug('[VINRetrieverLIB] Raw response string:', rawString);
-
-      // Look for multi-line VIN response pattern (e.g. "014\r0:490201314654\r1:4C523446455842\r2:50413938393934")
-      const lines = rawString.split(/[\r\n]+/);
+      // Extract VIN data from response frames
       let vinHexData = '';
+      const lines = rawString.split(/[\r\n]+/);
 
-      // Check each line for the special response format
       for (const line of lines) {
         const trimmed = line.trim();
 
@@ -826,48 +720,23 @@ export class VINRetriever {
         // Check for frame format (e.g. "0:490201314654")
         const frameMatch = trimmed.match(/^(\d+):([0-9A-F]+)$/i);
         if (frameMatch) {
-          const [, frameNum, hexData] = frameMatch;
-          log.debug(`[VINRetrieverLIB] Found frame ${frameNum}: ${hexData}`);
-
-          // For frame 0, strip the service/PID bytes (4902)
-          if (frameNum === '0' && hexData.includes('4902')) {
+          const hexData = frameMatch[2];
+          if (hexData.includes('4902')) {
             vinHexData += hexData.substring(hexData.indexOf('4902') + 4);
           } else {
             vinHexData += hexData;
           }
           continue;
         }
-
-        // Check for direct ISO-TP format (e.g. "7E8 10 14 49 02...")
-        const isotpMatch = trimmed.match(/^7E8\s+([0-9A-F\s]+)$/i);
-        if (isotpMatch) {
-          const hexData = isotpMatch[1].replace(/\s+/g, '');
-          if (hexData.includes('4902')) {
-            vinHexData += hexData.substring(hexData.indexOf('4902') + 4);
-          } else {
-            vinHexData += hexData;
-          }
-        }
       }
 
       if (!vinHexData) {
-        log.warn('[VINRetrieverLIB] No VIN data found in response');
         return null;
       }
 
-      log.debug('[VINRetrieverLIB] Assembled VIN hex:', vinHexData);
-
-      // Convert hex to ASCII
+      // Convert final hex to ASCII using ecuUtils functions
       const vin = this.hexToAscii(vinHexData);
-      log.debug('[VINRetrieverLIB] Parsed VIN:', vin);
-
-      if (this.isValidVIN(vin)) {
-        log.info('[VINRetrieverLIB] Successfully parsed VIN:', vin);
-        return vin;
-      }
-
-      log.warn('[VINRetrieverLIB] Invalid VIN format:', vin);
-      return null;
+      return this.isValidVIN(vin) ? vin : null;
     } catch (error) {
       log.error('[VINRetrieverLIB] Error processing VIN response:', error);
       return null;
@@ -883,13 +752,7 @@ export class VINRetriever {
     activeProtocol: PROTOCOL,
     selectedEcuAddress: string | null,
   ): Promise<ChunkedResponse | null> {
-    // Use passed-in parameters instead of ecuStore.getState() here
-    if (activeProtocol === null) {
-      log.error(
-        '[VINRetrieverLIB] Cannot attempt flow control: Active protocol is null (passed from caller).',
-      );
-      return null;
-    }
+    // Rest of implementation remains the same
     // Determine CAN type based on passed-in protocol and address
     const is29Bit =
       selectedEcuAddress?.startsWith('18DA') || // Check passed address first
