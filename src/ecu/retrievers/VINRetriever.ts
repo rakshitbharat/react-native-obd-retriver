@@ -1,31 +1,32 @@
 // filepath: src/ecu/retrievers/VINRetriever.ts
 import { log } from '../../utils/logger';
-import { ecuStore } from '../context/ECUStore';
+import { ecuStore } from '../context/ECUStore'; // Keep store import if needed elsewhere, otherwise remove
 import { DELAYS_MS, RESPONSE_KEYWORDS, ELM_COMMANDS } from '../utils/constants';
-import { cleanResponse, isResponseError } from '../utils/helpers';
+import { cleanResponse, isResponseError } from '../utils/helpers'; // Import helpers
+import { bytesToHex as utilBytesToHex } from '../utils/ecuUtils'; // Use ecuUtils for consistency
 
 import type {
   SendCommandFunction,
-  SendCommandRawFunction, // Import the correct type
-  ChunkedResponse,        // Import the correct type
+  SendCommandRawFunction,
+  ChunkedResponse,
 } from '../utils/types';
 
 export class VINRetriever {
   private sendCommand: SendCommandFunction;
-  private sendCommandRawChunked: SendCommandRawFunction; // Use the correct function type
+  private sendCommandRaw: SendCommandRawFunction;
 
   constructor(
     sendCommand: SendCommandFunction,
-    sendCommandRawChunked: SendCommandRawFunction, // Update parameter type
+    sendCommandRaw: SendCommandRawFunction,
   ) {
     if (!sendCommand) {
-      throw new Error('VINRetriever requires the standard sendCommand function for configuration.');
+      throw new Error('VINRetriever requires the standard sendCommand function.');
     }
-    if (!sendCommandRawChunked) {
-      throw new Error('VINRetriever requires the sendCommandRawChunked function.');
+    if (!sendCommandRaw) {
+      throw new Error('VINRetriever requires the sendCommandRaw function.');
     }
     this.sendCommand = sendCommand;
-    this.sendCommandRawChunked = sendCommandRawChunked; // Assign the function
+    this.sendCommandRaw = sendCommandRaw;
   }
 
   private delay(ms: number): Promise<void> {
@@ -34,372 +35,459 @@ export class VINRetriever {
     });
   }
 
-  private bytesToHex(bytes: Uint8Array): string {
-    // Ensure input is Uint8Array before processing
-     if (!(bytes instanceof Uint8Array)) {
-        log.warn('[VINRetriever] bytesToHex received non-Uint8Array:', bytes);
-        // Attempt conversion if possible, otherwise return empty
-        try {
-            bytes = new Uint8Array(Object.values(bytes));
-        } catch {
-            return '';
-        }
-    }
-    return Array.from(bytes)
-      .map(byte => byte.toString(16).padStart(2, '0').toUpperCase())
-      .join('');
+  /**
+   * Safely convert bytes to hex string using utility function.
+   */
+  private bytesToHex(bytes: Uint8Array | number[] | null | undefined): string {
+    if (!bytes) return '';
+    // Ensure it's Uint8Array or number[] before passing
+    const validBytes =
+      bytes instanceof Uint8Array || Array.isArray(bytes) ? bytes : [];
+    return utilBytesToHex(validBytes);
   }
 
+  /**
+   * Convert hex string to ASCII, filtering for valid VIN characters.
+   */
   private hexToAscii(hex: string): string {
     let str = '';
-    // Ensure hex string length is even
-    const cleanHex = hex.length % 2 !== 0 ? hex.slice(0, -1) : hex;
-    for (let i = 0; i < cleanHex.length; i += 2) {
-        try {
-            const charCode = parseInt(cleanHex.substring(i, i + 2), 16);
-            if (isNaN(charCode)) continue; // Skip if not a valid number
-            // Filter out non-printable ASCII characters except space
-            if (charCode >= 32 && charCode <= 126) {
-                 str += String.fromCharCode(charCode);
-            }
-        } catch (e) {
-            log.warn(`[VINRetriever] Error parsing hex pair: ${cleanHex.substring(i, i + 2)}`, e);
+    // Ensure hex string length is even, remove non-hex chars first
+    const cleanHex = hex.replace(/[^0-9A-F]/gi, '');
+    const finalHex = cleanHex.length % 2 !== 0 ? cleanHex.slice(0, -1) : cleanHex;
+
+    for (let i = 0; i < finalHex.length; i += 2) {
+      try {
+        const charCode = parseInt(finalHex.substring(i, i + 2), 16);
+        if (isNaN(charCode)) continue;
+        // Filter for standard printable ASCII relevant to VIN (alphanumeric)
+        if (
+          (charCode >= 48 && charCode <= 57) || // 0-9
+          (charCode >= 65 && charCode <= 90) // A-Z (uppercase)
+          // (charCode >= 97 && charCode <= 122) // a-z (allow lowercase if needed, but VINs are usually uppercase)
+        ) {
+          str += String.fromCharCode(charCode);
         }
+      } catch (e) {
+        log.warn(`[VINRetriever] Error parsing hex pair: ${finalHex.substring(i, i + 2)}`, e);
+      }
     }
+    // Only return if it looks like a potential VIN start, trim spaces added by String.fromCharCode maybe?
     return str.trim();
   }
 
-
+  /**
+   * Validate VIN format (17 alphanumeric chars, excluding I, O, Q).
+   */
   private isValidVIN(vin: string): boolean {
     return /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin);
   }
 
-  // Enhanced error checking
+  /**
+   * Check response chunks for errors, returning raw/clean strings.
+   */
   private checkResponseForErrors(
-    chunks: Uint8Array[] | null | undefined
-  ): { error: string | null; rawString: string; cleanHex: string } { // Allow string | null for error
-    // Initialize error as null, but allow string assignment later
+    chunks: Uint8Array[] | null | undefined,
+  ): { error: string | null; rawString: string; cleanHex: string } {
     const result: { error: string | null; rawString: string; cleanHex: string } = {
-        error: null,
-        rawString: '',
-        cleanHex: ''
+      error: null,
+      rawString: '',
+      cleanHex: '',
     };
+
     if (!chunks || chunks.length === 0) {
-      result.error = 'No response received'; // This assignment is now valid
+      result.error = 'No response received';
       return result;
     }
 
     try {
-        for (const chunk of chunks) {
-            const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
-            // Use Latin1 (ISO-8859-1) for decoding to preserve byte values
-            result.rawString += String.fromCharCode(...bytes);
-        }
+      // Combine chunks into a single string, preserving bytes using Latin1
+      for (const chunk of chunks) {
+        // Ensure chunk is Uint8Array
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
+        result.rawString += String.fromCharCode(...bytes);
+      }
     } catch (e) {
-         log.error('[VINRetriever] Error combining/decoding chunks', e);
-         result.error = 'Chunk processing error'; // This assignment is now valid
-         return result; // Cannot proceed if chunks are malformed
+      log.error('[VINRetriever] Error combining/decoding chunks', e);
+      result.error = 'Chunk processing error';
+      return result; // Cannot proceed if chunks are malformed
     }
 
+    // Basic cleaning for error keyword checking
+    const basicCleaned = result.rawString
+      .replace(/[>\r\n]/g, ' ') // Replace prompt/newlines with space
+      .replace(/\s+/g, ' ')     // Normalize whitespace
+      .trim();
 
-    // Basic cleaning for error checking (remove prompt, normalize whitespace)
-    const basicCleaned = result.rawString.replace(/[>\r\n]/g, ' ').replace(/\s+/g, ' ').trim();
-    result.cleanHex = basicCleaned.replace(/\s/g, '').toUpperCase(); // Hex string without spaces
+    // More thorough cleaning for hex processing
+    result.cleanHex = basicCleaned
+      .replace(/[^0-9A-F]/gi, '') // Keep only hex characters
+      .toUpperCase();
 
     // --- Specific Error Checks ---
-    if (isResponseError(basicCleaned)) { // Use helper which checks common ELM errors
-        if (basicCleaned.includes(RESPONSE_KEYWORDS.TIMEOUT)) result.error = 'Timeout'; // Valid
-        else if (basicCleaned.includes(RESPONSE_KEYWORDS.BUFFER_FULL)) result.error = 'Buffer Full'; // Valid
-        else if (basicCleaned.includes(RESPONSE_KEYWORDS.NO_DATA)) result.error = 'No Data'; // Valid
-        // General Negative Response check (7F XX XX)
-        else if (result.cleanHex.startsWith('7F')) {
-             // Try to extract Mode Echo and NRC more carefully
-             const modeEcho = result.cleanHex.substring(2, 4);
-             const nrc = result.cleanHex.substring(4, 6);
-             result.error = `Negative Response (Mode Echo: ${modeEcho}, NRC: ${nrc})`; // Valid
-        }
-        else result.error = `General Error (${basicCleaned})`; // Valid
+    if (isResponseError(basicCleaned)) { // Use helper for common ELM errors
+      if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.TIMEOUT)) result.error = 'Timeout';
+      else if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.BUFFER_FULL.replace(/\s/g, ''))) result.error = 'Buffer Full';
+      else if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.NO_DATA.replace(/\s/g, ''))) result.error = 'No Data';
+      else if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.UNABLE_TO_CONNECT.replace(/\s/g, ''))) result.error = 'Unable to Connect';
+      else if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.CAN_ERROR.replace(/\s/g, ''))) result.error = 'CAN Error';
+      else if (basicCleaned.toUpperCase().includes(RESPONSE_KEYWORDS.BUS_ERROR.replace(/\s/g, ''))) result.error = 'Bus Error';
+      else if (basicCleaned.trim() === RESPONSE_KEYWORDS.QUESTION_MARK) result.error = 'Command Error (?)';
+      // General Negative Response check (7F XX XX) - Check on the clean hex
+      else if (result.cleanHex.startsWith('7F')) {
+        const modeEcho = result.cleanHex.substring(2, 4); // 7F[XX]yy
+        const nrc = result.cleanHex.substring(4, 6);      // 7Fxx[YY]
+        result.error = `Negative Response (Mode Echo: ${modeEcho}, NRC: ${nrc})`;
+      }
+      else result.error = `General Error (${basicCleaned})`;
     }
-     // Check for empty response (just prompt)
-    else if (basicCleaned === RESPONSE_KEYWORDS.PROMPT || basicCleaned === '') {
-        result.error = 'Empty response'; // Valid
+    // Check for empty response (just prompt or whitespace)
+    else if (basicCleaned === '' || basicCleaned === RESPONSE_KEYWORDS.PROMPT) {
+      result.error = 'Empty response';
     }
 
     log.debug('[VINRetriever] checkResponseForErrors result:', { error: result.error, cleanHexLength: result.cleanHex.length });
     return result;
   }
 
-
+  /**
+   * Attempts to optimize CAN flow control settings and retry the VIN command.
+   * Based on logic from BaseDTCRetriever and ElmProtocolHelper.
+   */
   private async tryFlowControlAndRetryVIN(): Promise<ChunkedResponse | null> {
-    // ...(Keep the tryFlowControlAndRetryVIN function from the previous answer)
-        log.debug('[VINRetriever] Initial VIN request failed or returned error. Attempting Flow Control adjustments...');
-    const ecuResponseHeader = '7E8'; // TODO: Make dynamic if needed
+    log.debug('[VINRetriever] Initial VIN request failed or returned error. Attempting Flow Control adjustments...');
 
-    const flowControlConfigs = [
-      { fcsh: ecuResponseHeader, fcsd: '300000', fcsm: '1', desc: 'Standard (BS=0, ST=0, Mode=1)' },
-      { fcsh: ecuResponseHeader, fcsd: '300000', fcsm: '0', desc: 'No Wait (BS=0, ST=0, Mode=0)' },
-      { fcsh: ecuResponseHeader, fcsd: '300008', fcsm: '1', desc: 'Extended Wait (BS=0, ST=8ms, Mode=1)' },
-    ];
+    // TODO: Detect protocol dynamically if possible, default to common CAN settings
+    // For now, assume common CAN 11-bit (7E8) or 29-bit (18DAF110) response headers
+    // Let's try both potential standard response headers
+    const ecuResponseHeaders = ['7E8', '18DAF110'];
+    let successfulResponse: ChunkedResponse | null = null;
 
-    for (const config of flowControlConfigs) {
-      log.debug(`[VINRetriever] Trying Flow Control: ${config.desc}`);
-      try {
-        const fcshCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_HEADER}${config.fcsh}`;
-        const fcsdCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_DATA}${config.fcsd}`;
-        const fcsmCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_MODE}${config.fcsm}`;
-        let fcOk = true;
+    for (const ecuResponseHeader of ecuResponseHeaders) {
+      log.debug(`[VINRetriever] Trying FC optimization targeting ECU Response Header: ${ecuResponseHeader}`);
 
-        for(const cmd of [fcshCmd, fcsdCmd, fcsmCmd]){
-            const fcResponse = await this.sendCommand(cmd, { timeout: 2000 });
-             if (fcResponse === null || isResponseError(fcResponse)) {
-                 log.warn(`[VINRetriever] Flow control command "${cmd}" failed. Response: ${fcResponse ?? 'null'}`);
-                 fcOk = false; break;
-             }
-             await this.delay(DELAYS_MS.COMMAND_SHORT);
+      const flowControlConfigs = [
+        // Standard configuration
+        { fcsh: ecuResponseHeader, fcsd: '300000', fcsm: '1', desc: 'Standard (BS=0, ST=0, Mode=1)' },
+        // No wait mode
+        { fcsh: ecuResponseHeader, fcsd: '300000', fcsm: '0', desc: 'No Wait (BS=0, ST=0, Mode=0)' },
+        // Extended wait time (8ms) - ST value is hex 08 = 8ms
+        { fcsh: ecuResponseHeader, fcsd: '300008', fcsm: '1', desc: 'Extended Wait (BS=0, ST=8ms, Mode=1)' },
+      ];
+
+      for (const config of flowControlConfigs) {
+        log.debug(`[VINRetriever] Trying Flow Control: ${config.desc} for Header ${ecuResponseHeader}`);
+        try {
+          const fcshCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_HEADER}${config.fcsh}`;
+          const fcsdCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_DATA}${config.fcsd}`;
+          const fcsmCmd = `${ELM_COMMANDS.CAN_FLOW_CONTROL_MODE}${config.fcsm}`;
+          let fcOk = true;
+
+          // Apply Flow Control settings using standard sendCommand
+          for (const cmd of [fcshCmd, fcsdCmd, fcsmCmd]) {
+            const fcResponse = await this.sendCommand(cmd, { timeout: 2000 }); // Use options object
+            if (fcResponse === null || isResponseError(fcResponse)) {
+              log.warn(`[VINRetriever] Flow control command "${cmd}" failed. Response: ${fcResponse ?? 'null'}`);
+              fcOk = false; break;
+            }
+            await this.delay(DELAYS_MS.COMMAND_SHORT);
+          }
+          if (!fcOk) continue; // Try next config if setup failed
+
+          log.debug('[VINRetriever] Retrying 0902 command with new FC settings...');
+          // Retry the VIN command using sendCommandRaw
+          const retryResponse: ChunkedResponse | null = await this.sendCommandRaw('0902', { timeout: 15000 }); // Use options object
+          // Check if retryResponse is not null before accessing chunks
+          const { error: retryError } = this.checkResponseForErrors(retryResponse?.chunks);
+
+          if (retryResponse && !retryError) {
+            log.info(`[VINRetriever] Flow control adjustment successful with: ${config.desc} for Header ${ecuResponseHeader}`);
+            successfulResponse = retryResponse; // Store successful response
+            break; // Exit inner loop (configs)
+          } else {
+            log.debug(`[VINRetriever] Flow control config (${config.desc}) did not yield valid response on retry. Error: ${retryError ?? 'Unknown'}`);
+          }
+        } catch (error) {
+          log.warn(`[VINRetriever] Error during Flow Control config attempt (${config.desc}):`, {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-        if(!fcOk) continue;
+        await this.delay(DELAYS_MS.COMMAND_MEDIUM); // Wait before trying next config
+      } // End config loop
 
-        log.debug('[VINRetriever] Retrying 0902 command with new FC settings...');
-        // Call the function correctly, it returns Promise<ChunkedResponse>
-        const retryResponse: ChunkedResponse | null = await this.sendCommandRawChunked('0902', { timeout: 15000 });
-        // Check if retryResponse is not null before accessing chunks
-        const { error: retryError } = this.checkResponseForErrors(retryResponse?.chunks);
-
-        if (retryResponse && !retryError) {
-          log.info(`[VINRetriever] Flow control adjustment successful with: ${config.desc}`);
-          // Return the ChunkedResponse object
-          return retryResponse;
-        } else {
-           log.debug(`[VINRetriever] Flow control config (${config.desc}) did not yield valid response on retry. Error: ${retryError ?? 'Unknown'}`);
-        }
-      } catch (error) {
-        log.warn(`[VINRetriever] Error during Flow Control config attempt (${config.desc}):`, {
-          error: error instanceof Error ? error.message : String(error),
-        });
+      if (successfulResponse) {
+        break; // Exit outer loop (headers) if successful
       }
-       await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+    } // End header loop
+
+    if (!successfulResponse) {
+        log.warn('[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.');
     }
-    log.warn('[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.');
-    return null;
+    return successfulResponse; // Return the successful response or null
   }
 
-
+  /**
+   * Processes the raw chunks from the adapter to extract the VIN string.
+   * Handles multi-frame ISO-TP responses.
+   */
   private processVINResponse(chunks: Uint8Array[]): string | null {
-    // ...(Keep the robust processVINResponse function from the previous answer, maybe add more logging)
-    // Add extra logging inside this function if needed
     log.debug("[VINRetriever] Starting processVINResponse...");
     try {
-        let combinedString = '';
-        for (const chunk of chunks) {
-             // Ensure chunk is Uint8Array before processing
-            const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
-            // Decode using Latin1 (ISO-8859-1) to preserve raw bytes
-            combinedString += String.fromCharCode(...bytes);
+      let combinedString = '';
+      for (const chunk of chunks) {
+        // Ensure chunk is Uint8Array before processing
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
+        // Decode using Latin1 (ISO-8859-1) to preserve raw bytes during assembly
+        combinedString += String.fromCharCode(...bytes);
+      }
+
+      // Log the raw combined string (replace non-printable for clarity)
+      log.debug('[VINRetriever] processVINResponse - Combined Raw String:', combinedString.replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
+
+      const lines = combinedString.split(/[\r\n]+/);
+      log.debug('[VINRetriever] processVINResponse - Split Lines:', lines);
+
+      let assembledVINData = '';
+      let isMultiFrameSequence = false;
+      let expectedFrameIndex = 1;
+      let totalVINLength = 0;
+
+      // Expanded noise/status patterns to filter lines
+      const noisePatterns = [
+        /^AT/i, /^OK$/i, /^\?$/, /^>$/, /^SEARCHING/i, /^BUS INIT/i,
+        /^STOPPED$/i, /^NO DATA$/i, /^ERROR$/i, /^CAN ERROR$/i, /^BUFFER FULL$/i,
+        /^UNABLE TO CONNECT$/i, /^FB ERROR$/i, /^DATA ERROR$/i,
+        // Command echoes (might appear depending on ATE setting)
+        /^0902/i,
+        // Specific negative responses (e.g., 7F 09 XX)
+        /^7F09/i,
+        // ELM Version response
+        /^ELM327/i,
+        // Voltage response
+        /^[0-9.]+V$/i,
+      ];
+
+      for (const line of lines) {
+        let processedLine = line.trim();
+        if (!processedLine) continue;
+
+        // More aggressive noise check first (check the cleaned line)
+        const cleanedForNoiseCheck = processedLine.replace(/\s/g, '').toUpperCase();
+        if (noisePatterns.some(pattern => pattern.test(cleanedForNoiseCheck))) {
+          log.debug('[VINRetriever] Discarding noise/status/error line:', processedLine);
+          continue;
         }
 
-        log.debug('[VINRetriever] processVINResponse - Combined Raw String:', combinedString.replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
+        // Remove ELM frame numbering (e.g., "0:", "1:") if present
+        processedLine = processedLine.replace(/^\s*[0-9A-F]{1,2}:\s*/, '');
+        const hexLine = processedLine.replace(/[^0-9A-F]/gi, '').toUpperCase(); // Keep only hex chars
+        if (!hexLine) continue;
 
-        const lines = combinedString.split(/[\r\n]+/);
-        log.debug('[VINRetriever] processVINResponse - Split Lines:', lines);
+        // --- ISO-TP Frame processing ---
+        // Find positive response marker 4902 (Mode 09, PID 02 response)
+        const vinResponseStartIndex = hexLine.indexOf('4902');
 
-        let assembledVINData = '';
-        let isMultiFrameSequence = false;
-        let expectedFrameIndex = 1;
-        let totalVINLength = 0;
+        let dataPart: string; // Data portion of the frame
 
-        // Expanded noise patterns
-        const noisePatterns = [
-            /^AT/i, /^OK/i, /^\?/, /^>/, /^SEARCHING/i, /^BUS INIT/i,
-            /^STOPPED/i, /^NO DATA/i, /^ERROR/i,
-            // Specific negative responses seen:
-            /^7F 01 31/i, // From logs
-            /^7F 09 11/i, // Service not supported
-            /^7F 09 12/i, // Sub-function not supported
-            /^7F 09 22/i, // Conditions not correct
-            /^7F 09 31/i, // Request out of range (explicitly handled below too)
-            // Command echoes:
-            /^0100/i, /^0902/i,
-        ];
+        if (!isMultiFrameSequence) {
+          // If not in sequence, look for the start (SF or FF)
+          if (vinResponseStartIndex === -1) {
+            log.debug('[VINRetriever] Discarding line without 4902 and not in active sequence:', hexLine);
+            continue; // Ignore lines before the positive response unless in sequence
+          }
+          // Extract data after 4902
+          dataPart = hexLine.substring(vinResponseStartIndex + 4);
+          const frameTypeNibble = dataPart.substring(0, 1);
 
-        for (const line of lines) {
-            let processedLine = line.trim();
-            if (!processedLine) continue;
-
-             // More aggressive noise check first
-             if (noisePatterns.some(pattern => pattern.test(processedLine.replace(/\s/g, '')))) { // Check without spaces too
-                log.debug('[VINRetriever] Discarding noise/status/error line:', processedLine);
-                continue;
+          if (frameTypeNibble === '0') { // Single Frame (SF) - PCI: 0L DD...
+            const length = parseInt(dataPart.substring(1, 2), 16);
+            if (!isNaN(length) && length > 0 && dataPart.length >= 2 + length * 2) {
+              assembledVINData = dataPart.substring(2, 2 + length * 2); // Extract specific length
+              log.debug(`[VINRetriever] Found Single Frame (SF). Length: ${length}, Data: ${assembledVINData}`);
+              break; // SF is a complete message
+            } else {
+              log.warn('[VINRetriever] Invalid Single Frame format:', { dataPart });
+              return null; // Invalid SF
             }
-
-
-             // Handle trailing '62' potentially
-            if (processedLine.endsWith('62')) {
-                const without62 = processedLine.slice(0, -2).trim();
-                 // Only remove if it leaves something meaningful potentially
-                if (without62.length > 0 && (without62.includes('4902') || /^[0-9A-F\s]+$/i.test(without62))) {
-                   processedLine = without62;
-                }
+          } else if (frameTypeNibble === '1') { // First Frame (FF) - PCI: 1LLL DD...
+            const lengthHex = dataPart.substring(1, 4); // 12 bits length
+            totalVINLength = parseInt(lengthHex, 16);
+            if (isNaN(totalVINLength) || totalVINLength <= 7 || dataPart.length < 4) { // Must be > 7 for MF
+                log.warn('[VINRetriever] Invalid First Frame format or length:', { dataPart, totalVINLength });
+                return null; // Invalid FF
             }
-
-            processedLine = processedLine.replace(/^\s*[0-9A-F]{1,2}:\s*/, ''); // Remove frame numbering
-            const hexLine = processedLine.replace(/\s/g, '').toUpperCase();
-            if (!hexLine) continue;
-
-            // Explicit Negative response check FIRST
-            if (hexLine.startsWith('7F')) {
-                const modeEcho = hexLine.substring(2, 4);
-                const nrc = hexLine.substring(4, 6);
-                log.warn(`[VINRetriever] Received Negative Response during parsing. Mode Echo: ${modeEcho}, NRC: ${nrc}`);
-                return null; // Stop parsing on negative response
-            }
-
-            // Find positive response marker 4902
-            const vinResponseStartIndex = hexLine.indexOf('4902');
-            if (vinResponseStartIndex === -1 && !isMultiFrameSequence) {
-                log.debug('[VINRetriever] Discarding line without 4902 or active sequence:', hexLine);
-                continue;
-            }
-
-            let dataPart = isMultiFrameSequence ? hexLine : hexLine.substring(vinResponseStartIndex + 4);
+            isMultiFrameSequence = true;
+            expectedFrameIndex = 1;
+            assembledVINData = dataPart.substring(4); // Initial data
+            log.debug(`[VINRetriever] Found First Frame (FF). Expected Length: ${totalVINLength}, Initial Data: ${assembledVINData}`);
+          } else {
+            // Response started with 4902 but not SF or FF - maybe single chunk data without ISO-TP?
+            log.debug('[VINRetriever] Response starts with 4902 but not SF/FF. Treating as single data chunk:', { dataPart });
+            assembledVINData = dataPart;
+            break; // Assume complete
+          }
+        } else { // --- Currently in a multi-frame sequence ---
+            dataPart = hexLine; // Use the whole hex line as potential data
             const frameTypeNibble = dataPart.substring(0, 1);
 
-             // ISO-TP Frame processing (same as before)
-            if (frameTypeNibble === '0' && !isMultiFrameSequence) { /* SF handling */
-                 const length = parseInt(dataPart.substring(1, 2), 16);
-                 if (!isNaN(length) && length > 0) {
-                     assembledVINData = dataPart.substring(2, 2 + length * 2); break; // Assume SF is complete
-                 } else { return null; } // Invalid SF
-            }
-            else if (frameTypeNibble === '1' && !isMultiFrameSequence) { /* FF handling */
-                const lengthHex = dataPart.substring(1, 4); totalVINLength = parseInt(lengthHex, 16);
-                if (isNaN(totalVINLength) || totalVINLength === 0) { return null; } // Invalid FF
-                isMultiFrameSequence = true; expectedFrameIndex = 1; assembledVINData = dataPart.substring(4);
-            }
-            else if (frameTypeNibble === '2' && isMultiFrameSequence) { /* CF handling */
+            if (frameTypeNibble === '2') { // Consecutive Frame (CF) - PCI: 2N DD...
                 const sequenceNumber = parseInt(dataPart.substring(1, 2), 16);
-                if (isNaN(sequenceNumber)) { isMultiFrameSequence = false; assembledVINData = ''; continue; } // Invalid CF
-                if (sequenceNumber !== expectedFrameIndex % 16) { isMultiFrameSequence = false; assembledVINData = ''; continue; } // Sequence error
-                assembledVINData += dataPart.substring(2); expectedFrameIndex++;
+                if (isNaN(sequenceNumber)) {
+                    log.warn('[VINRetriever] Invalid Consecutive Frame sequence number:', { dataPart });
+                    isMultiFrameSequence = false; assembledVINData = ''; continue; // Invalid CF, reset sequence
+                }
+                if (sequenceNumber !== expectedFrameIndex % 16) {
+                    log.warn(`[VINRetriever] Unexpected CF sequence. Expected ${expectedFrameIndex % 16}, got ${sequenceNumber}. Frame: ${dataPart}. Resetting sequence.`);
+                    isMultiFrameSequence = false; assembledVINData = ''; continue; // Sequence error, reset sequence
+                }
+                assembledVINData += dataPart.substring(2); // Append data
+                expectedFrameIndex++;
+                log.debug(`[VINRetriever] Found Consecutive Frame (CF). Sequence: ${sequenceNumber}, Appended Data: ${dataPart.substring(2)}`);
+            } else if (frameTypeNibble === '3') { // Flow Control (FC) - PCI: 3S BS ST
+                log.debug('[VINRetriever] Ignoring Flow Control Frame (FC):', { dataPart });
+                // Do nothing, just ignore this frame
+            } else {
+                log.warn('[VINRetriever] Unexpected frame type received during multi-frame sequence:', { dataPart });
+                // Decide how to handle: ignore frame, reset sequence? Let's reset.
+                isMultiFrameSequence = false; assembledVINData = ''; continue;
             }
-            else if (frameTypeNibble === '3') { /* FC handling - ignore */ }
-            else if (!isMultiFrameSequence && vinResponseStartIndex !== -1) { /* Single chunk data */
-                assembledVINData = dataPart; break;
-            }
-            else { /* Unrecognized */ log.debug('[VINRetriever] Discarding unrecognized data line:', hexLine); }
-
-
-            // Check completion
-            if (isMultiFrameSequence && totalVINLength > 0 && assembledVINData.length >= totalVINLength * 2) {
-                assembledVINData = assembledVINData.substring(0, totalVINLength * 2); break;
-            }
-        } // End line processing loop
-
-        if (!assembledVINData) {
-            log.warn('[VINRetriever] No VIN data could be assembled.'); return null;
-        }
-        log.debug('[VINRetriever] Assembled VIN Hex:', assembledVINData);
-
-        if (assembledVINData.length < 34) {
-            log.warn(`[VINRetriever] Assembled VIN data too short (${assembledVINData.length} hex chars).`); return null;
         }
 
-        const vinHex = assembledVINData.substring(0, 34);
-        const vin = this.hexToAscii(vinHex);
-        log.debug('[VINRetriever] Parsed VIN String:', vin);
-
-        if (this.isValidVIN(vin)) {
-            log.info('[VINRetriever] Valid VIN found:', vin); return vin;
-        } else {
-            log.warn('[VINRetriever] Parsed string is not valid VIN.', { vin }); return null;
+        // Check completion for multi-frame
+        if (isMultiFrameSequence && totalVINLength > 0 && assembledVINData.length >= totalVINLength * 2) {
+          log.debug(`[VINRetriever] Multi-frame message complete. Expected ${totalVINLength} bytes, received ${assembledVINData.length / 2}.`);
+          assembledVINData = assembledVINData.substring(0, totalVINLength * 2); // Trim any excess
+          break; // Message complete
         }
+      } // End line processing loop
+
+      if (!assembledVINData) {
+        log.warn('[VINRetriever] No valid VIN data could be assembled from the response.');
+        return null;
+      }
+      log.debug('[VINRetriever] Assembled VIN Hex:', assembledVINData);
+
+      // ISO-TP data part for VIN should contain the VIN ASCII bytes.
+      // The standard VIN response is usually prefixed by a byte indicating the number of data items (usually 01 for VIN)
+      // Example: 01<17 bytes of VIN ASCII>
+      // Check if the first byte looks like a count (e.g., 01)
+      let vinHex = assembledVINData;
+      if (assembledVINData.startsWith('01') && assembledVINData.length >= 36) { // 01 + 17 bytes * 2 hex chars = 36
+        log.debug('[VINRetriever] Detected potential VIN count prefix (01), removing.');
+        vinHex = assembledVINData.substring(2); // Skip the '01'
+      }
+
+      // Ensure we have exactly 17 bytes (34 hex chars) for VIN
+      if (vinHex.length < 34) {
+        log.warn(`[VINRetriever] Assembled VIN hex data too short (${vinHex.length} hex chars). Expected 34. Data: ${vinHex}`);
+        return null;
+      }
+      if (vinHex.length > 34) {
+        log.debug('[VINRetriever] Assembled VIN hex data longer than 34 chars, taking first 34.', { vinHex });
+        vinHex = vinHex.substring(0, 34);
+      }
+
+
+      const vin = this.hexToAscii(vinHex);
+      log.debug('[VINRetriever] Parsed VIN String:', vin);
+
+      if (this.isValidVIN(vin)) {
+        log.info('[VINRetriever] Valid VIN found:', vin);
+        return vin;
+      } else {
+        log.warn('[VINRetriever] Parsed string is not valid VIN format.', { vin });
+        return null;
+      }
 
     } catch (error: unknown) {
-        log.error('[VINRetriever] Error processing VIN response:', {
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-        });
-        return null;
+      log.error('[VINRetriever] Error processing VIN response:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      return null;
     }
   }
 
-
+  /**
+   * Main method to retrieve the VIN. Handles initial request and potential retries with flow control.
+   */
   public async retrieveVIN(): Promise<string | null> {
     try {
       log.debug('[VINRetriever] Sending initial VIN request (0902)...');
-      // Type response correctly based on the function's return type
-      let response: ChunkedResponse | null = await this.sendCommandRawChunked('0902', { timeout: 15000 });
+      let response: ChunkedResponse | null = await this.sendCommandRaw('0902', { timeout: 15000 });
 
-      // Log initial chunks received for debugging
+      // Log initial chunks received
       if (response?.chunks) {
-            log.debug(`[VINRetriever] Received initial ${response.chunks.length} chunks for 0902.`);
-            response.chunks.forEach((chunk, index) => {
-                const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
-                log.debug(`[VINRetriever] Initial Chunk ${index} Hex:`, this.bytesToHex(bytes));
-                log.debug(`[VINRetriever] Initial Chunk ${index} ASCII:`, String.fromCharCode(...bytes).replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
-            });
-            // Log the combined raw string from initial check
-            const { rawString: initialRawStringForLog } = this.checkResponseForErrors(response?.chunks);
-            log.debug('[VINRetriever] Initial Raw String Combined:', initialRawStringForLog.replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
+        log.debug(`[VINRetriever] Received initial ${response.chunks.length} chunks for 0902.`);
+        // Optional: Log chunk details if needed for deep debugging
+        // response.chunks.forEach((chunk, index) => {
+        //     const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
+        //     log.debug(`[VINRetriever] Initial Chunk ${index} Hex:`, this.bytesToHex(bytes));
+        //     log.debug(`[VINRetriever] Initial Chunk ${index} ASCII:`, String.fromCharCode(...bytes).replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
+        // });
+        const { rawString: initialRawStringForLog } = this.checkResponseForErrors(response?.chunks);
+        log.debug('[VINRetriever] Initial Raw String Combined:', initialRawStringForLog.replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
       } else {
-           log.warn('[VINRetriever] No initial chunks received for 0902.');
-           // Consider triggering FC retry even on no response? Or just fail? Let's fail for now.
-           return null;
+        log.warn('[VINRetriever] No initial chunks received for 0902.');
+        // If no response at all, trigger FC retry? Or just fail? Let's try FC.
+        response = await this.tryFlowControlAndRetryVIN();
+        if (!response) {
+            log.error('[VINRetriever] VIN retrieval failed: No response even after Flow Control adjustments.');
+            return null;
+        }
+        log.info('[VINRetriever] Flow Control retry attempt yielded a response.');
       }
 
-      // Access chunks safely using optional chaining
-      const { error: initialError, rawString: initialRawString } = this.checkResponseForErrors(response?.chunks);
+      // Check initial response for errors
+      const { error: initialError } = this.checkResponseForErrors(response?.chunks);
       log.debug('[VINRetriever] Initial response check result:', { initialError });
 
+      // If initial response had errors potentially related to flow control, attempt retry
+      if (initialError) {
+        log.warn(`[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`);
+        // Determine if FC retry is warranted based on the error type
+        // Errors like Timeout, Buffer Full, Negative Response (e.g., NRC 31 - Request out of range, sometimes related to timing/FC)
+        const retryFCErrors = ['Timeout', 'Buffer Full', 'Negative Response (NRC: 31)', 'Negative Response (NRC: 22)']; // NRC 22 = Conditions not correct
+        const isRetryableError = retryFCErrors.some(e => initialError.includes(e));
 
-       if (initialError) {
-          log.warn(`[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`);
-          // Determine if FC retry is warranted based on the error type
-          const retryFCErrors = ['Timeout', 'Buffer Full', 'Negative Response (NRC: 31)', 'Negative Response (NRC: 22)']; // Add NRC 22?
-          const isRetryableError = retryFCErrors.some(e => initialError.includes(e));
-
-          if (isRetryableError) {
-                log.debug('[VINRetriever] Triggering Flow Control retry due to error:', initialError);
-                // tryFlowControlAndRetryVIN now returns Promise<ChunkedResponse | null>
-                response = await this.tryFlowControlAndRetryVIN();
-                if (!response) {
-                   log.error('[VINRetriever] VIN retrieval failed even after Flow Control adjustments.');
-                   return null; // FC retry also failed
-                }
-                log.info('[VINRetriever] Flow Control retry yielded a response.');
-          } else {
-              log.debug('[VINRetriever] Skipping Flow Control retry because error is considered definitive:', initialError);
-              return null; // Initial definitive failure
+        if (isRetryableError) {
+          log.debug('[VINRetriever] Triggering Flow Control retry due to error:', initialError);
+          response = await this.tryFlowControlAndRetryVIN(); // tryFlowControlAndRetryVIN returns Promise<ChunkedResponse | null>
+          if (!response) {
+            log.error('[VINRetriever] VIN retrieval failed even after Flow Control adjustments.');
+            return null; // FC retry also failed
           }
-       }
+          log.info('[VINRetriever] Flow Control retry yielded a valid response.');
+           // Check the response *after* retry for errors again
+          const { error: retryError } = this.checkResponseForErrors(response?.chunks);
+           if(retryError){
+               log.error(`[VINRetriever] Flow control retry response still contained an error: ${retryError}`);
+               return null;
+           }
 
-      // If we have a response (either initial or after FC retry)
-      // Check response is not null before accessing chunks
-      if (response?.chunks) {
-        log.debug(`[VINRetriever] Processing final ${response.chunks.length} chunks for VIN.`);
-        // Log final chunks if they came from retry
-         if (initialError) { // Only log again if we retried
-            response.chunks.forEach((chunk, index) => {
-                const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
-                log.debug(`[VINRetriever] Final Chunk ${index} Hex:`, this.bytesToHex(bytes));
-                log.debug(`[VINRetriever] Final Chunk ${index} ASCII:`, String.fromCharCode(...bytes).replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
-            });
-         }
-         console.log('LOG Final Response Object to Parse:', JSON.stringify(response, (key, value) =>
-           value instanceof Uint8Array ? Array.from(value) : value, 2) // Log final structure
-         );
-
-        // Process the potentially successful response's chunks
-        const vin = this.processVINResponse(response.chunks);
-        if (vin) {
-          // VIN successfully parsed
-          return vin;
         } else {
-           log.warn('[VINRetriever] Failed to parse VIN from the final response chunks.');
-           return null;
+          log.warn('[VINRetriever] Skipping Flow Control retry because error is considered definitive:', initialError);
+          return null; // Initial definitive failure
         }
       }
 
-      // If response was null even after potential retries
+      // If we have a response (either initial or after FC retry)
+      if (response?.chunks) {
+        log.debug(`[VINRetriever] Processing final ${response.chunks.length} chunks for VIN.`);
+        // Log the structure before parsing if helpful
+        // console.log('LOG Final Response Object to Parse:', JSON.stringify(response, (key, value) =>
+        //    value instanceof Uint8Array ? Array.from(value) : value, 2)
+        // );
+
+        const vin = this.processVINResponse(response.chunks);
+        if (vin) {
+          return vin; // Successfully parsed VIN
+        } else {
+          log.warn('[VINRetriever] Failed to parse VIN from the final response chunks.');
+          return null;
+        }
+      }
+
+      // Should not be reached if logic is correct, but as a fallback
       log.warn('[VINRetriever] No valid response chunks available after all attempts.');
       return null;
 
@@ -411,5 +499,4 @@ export class VINRetriever {
       return null;
     }
   }
-
 }

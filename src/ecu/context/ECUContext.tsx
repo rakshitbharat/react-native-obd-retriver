@@ -281,7 +281,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         await log.debug(
           `[ECUContext] Received raw response for "${response.command}": ${response.chunks.length} chunks`,
           // Access totalBytes from the new object
-          { totalBytes: response.totalBytes },
+          response,
         );
 
         // Return the newly constructed object which matches the local type definition
