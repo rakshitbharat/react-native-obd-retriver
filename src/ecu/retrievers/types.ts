@@ -11,12 +11,20 @@ export interface CommandConfig {
  */
 export interface CANConfig {
   desc: string;
-  header: string;
+  functionalHeader: string;
   receiveAddr: string;
   flowAddr: string;
+  canType: '11bit' | '29bit';
+  adaptiveTimingMode: 0 | 1 | 2;
   commands: CommandConfig[];
-  canType: '11bit' | '29bit'; // Add CAN type
-  adaptiveTimingMode: 0 | 1 | 2; // Preferred AT mode
+}
+
+export interface Delays {
+  INIT: number;
+  COMMAND: number;
+  PROTOCOL: number;
+  ADAPTIVE_BASE: number;
+  ST_TIMEOUT: number;
 }
 
 /**
@@ -26,12 +34,7 @@ export interface VINConstants {
   COMMAND: string;
   TIMEOUT: number;
   RETRIES: number;
-  DELAYS: {
-    INIT: number;
-    COMMAND: number;
-    PROTOCOL: number;
-    ADAPTIVE_BASE: number; // Base delay for adaptive timing
-  };
+  DELAYS: Delays;
   INIT_SEQUENCE_PRE_PROTOCOL: CommandConfig[]; // Commands before protocol set
   INIT_SEQUENCE_POST_PROTOCOL: CommandConfig[]; // Commands after protocol set
   CAN_CONFIGS: CANConfig[];
@@ -64,12 +67,20 @@ export interface ChunkedResponse {
 }
 
 /**
+ * Options for command execution
+ */
+export interface CommandOptions {
+  timeout?: number;
+  raw?: boolean;
+}
+
+/**
  * Command response handlers
  */
 export type SendCommandFunction = (command: string) => Promise<string | null>;
 export type SendCommandRawFunction = (
   command: string,
-  options?: { timeout?: number },
+  options?: CommandOptions,
 ) => Promise<ChunkedResponse | null>;
 
 /**
