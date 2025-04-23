@@ -296,9 +296,7 @@ export class VINRetriever {
     response: string | null,
   ): boolean {
     if (!response) {
-      log.debug(
-        '[VINRetrieverLIB] isValidCommandResponse: Received null response.',
-      );
+      log.debug('[VINRetrieverLIB] isValidCommandResponse: Received null response.');
       return false;
     }
 
@@ -311,42 +309,53 @@ export class VINRetriever {
       `[VINRetrieverLIB] isValidCommandResponse: Evaluating trimmed response: "${trimmedResponse}" (Original: "${response}")`,
     );
 
+    // Special case for protocol setting commands (ATSPX)
+    if (command.startsWith('ATSP')) {
+      // Valid protocol responses can be:
+      // 1. OK response
+      // 2. Protocol number echo
+      // 3. Valid ECU response starting with 41
+      const isProtocolOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                          upperResponse === command.slice(-1) ||
+                          upperResponse.startsWith('41');
+      if (isProtocolOk) {
+        log.debug(`[VINRetrieverLIB] Valid protocol response: ${trimmedResponse}`);
+        return true;
+      }
+    }
+
     // 1. Check for definite error keywords or 7F prefix
     if (
       upperResponse.includes(RESPONSE_KEYWORDS.ERROR) ||
       upperResponse.includes(RESPONSE_KEYWORDS.CAN_ERROR) ||
       upperResponse.includes(RESPONSE_KEYWORDS.BUS_ERROR) ||
-      upperResponse.includes(RESPONSE_KEYWORDS.NO_DATA) || // Treat NO DATA as error for AT commands
+      upperResponse.includes(RESPONSE_KEYWORDS.NO_DATA) ||
       upperResponse.includes(RESPONSE_KEYWORDS.UNABLE_TO_CONNECT) ||
-      upperResponse.startsWith('7F') // Negative response
+      upperResponse.startsWith('7F')
     ) {
       log.debug(
-        `[VINRetrieverLIB] isValidCommandResponse: Detected definite error keyword/prefix in "${upperResponse}". Result: false`,
+        `[VINRetrieverLIB] isValidCommandResponse: Detected error keyword/prefix in "${upperResponse}". Result: false`,
       );
       return false;
     }
 
     // 2. Check if the response is *only* a question mark
     if (trimmedResponse === RESPONSE_KEYWORDS.QUESTION_MARK) {
-      log.debug(
-        `[VINRetrieverLIB] isValidCommandResponse: Detected lone '?' error. Result: false`,
-      );
+      log.debug(`[VINRetrieverLIB] isValidCommandResponse: Detected lone '?' error. Result: false`);
       return false;
     }
 
-    // 3. Check for common success patterns (OK, ELM, or ending with 62)
+    // 3. Check for common success patterns
     const isOk = upperResponse.includes(RESPONSE_KEYWORDS.OK);
-    // Check if the non-alphanumeric-stripped response ends with '62'
-    const endsWith62 = trimmedResponse
-      .replace(/[^A-Z0-9]/gi, '')
-      .endsWith('62');
+    const endsWith62 = trimmedResponse.replace(/[^A-Z0-9]/gi, '').endsWith('62');
     const isElm = upperResponse.includes(RESPONSE_KEYWORDS.ELM_MODEL);
-    const isEmptyAfterTrim = trimmedResponse === ''; // Was only prompt or whitespace
+    const isEmptyAfterTrim = trimmedResponse === '';
+    const startsWithValidEcu = upperResponse.startsWith('41'); // Valid ECU response
 
-    const isValid = isOk || endsWith62 || isElm || isEmptyAfterTrim;
+    const isValid = isOk || endsWith62 || isElm || isEmptyAfterTrim || startsWithValidEcu;
 
     log.debug(
-      `[VINRetrieverLIB] isValidCommandResponse: Checks for "${trimmedResponse}": isOk=${isOk}, endsWith62=${endsWith62}, isElm=${isElm}, isEmpty=${isEmptyAfterTrim}. Result: ${isValid}`,
+      `[VINRetrieverLIB] isValidCommandResponse: Checks for "${trimmedResponse}": isOk=${isOk}, endsWith62=${endsWith62}, isElm=${isElm}, isEmpty=${isEmptyAfterTrim}, validEcu=${startsWithValidEcu}. Result: ${isValid}`,
     );
 
     return isValid;
