@@ -1,5 +1,5 @@
 import { log } from '../../utils/logger';
-import { RESPONSE_KEYWORDS } from '../utils/constants'; // Removed DELAYS_MS, ELM_COMMANDS
+import { RESPONSE_KEYWORDS, PROTOCOL } from '../utils/constants'; // Removed DELAYS_MS, ELM_COMMANDS // Added PROTOCOL
 import { isResponseError } from '../utils/helpers';
 import { bytesToHex } from '../utils/ecuUtils';
 import { ecuStore } from '../context/ECUStore';
@@ -10,9 +10,9 @@ import type {
   VINConstants,
   ResponseValidation,
   CANConfig,
-  ECUStoreState, // Import ECUStoreState for type checking state
+  // ECUStoreState, // No longer needed directly in tryFlowControl signature
   CommandConfig,
-} from './types';
+} from './types'; // Adjusted imports
 
 // Constants for VIN retrieval - Refined based on JS analysis
 const VIN_CONSTANTS: VINConstants = {
@@ -325,33 +325,61 @@ export class VINRetriever {
   }
 
   private isValidCommandResponse(response: string | null): boolean {
-    if (!response) return false;
-    const cleaned = response.trim().toUpperCase();
+    if (!response) {
+        log.debug('[VINRetrieverLIB] isValidCommandResponse: Received null response.');
+        return false;
+    }
 
-    // Common valid response patterns
-    return (
-      cleaned.includes('OK') ||
-      cleaned.endsWith('62') || // Success suffix
-      /^4[0-9A-F]/i.test(cleaned) || // OBD response
-      cleaned.includes('ELM') || // ELM response
-      cleaned === '>' // Prompt
-    );
+    // Aggressive cleaning: remove prompt, trim whitespace thoroughly
+    const cleaned = response.replace(/>/g, '').trim().toUpperCase();
+    log.debug(`[VINRetrieverLIB] isValidCommandResponse: Evaluating cleaned response: "${cleaned}" (Original: "${response}")`);
+
+
+    // Check for specific error patterns first
+    if (
+      cleaned.includes('ERROR') ||
+      cleaned.includes('?') || // Command error
+      cleaned.startsWith('7F') // Negative response
+    ) {
+      log.debug(`[VINRetrieverLIB] isValidCommandResponse: Detected error pattern in "${cleaned}". Result: false`);
+      return false;
+    }
+
+    // Common valid response patterns for AT commands
+    const isOk = cleaned.includes('OK');
+    // Check if the cleaned response *ends with* '62', potentially after the echoed command
+    const endsWith62 = cleaned.endsWith('62');
+    const isElm = cleaned.includes('ELM');
+    const isEmptyAfterClean = cleaned === ''; // Was only prompt or whitespace
+
+    const isValid = isOk || endsWith62 || isElm || isEmptyAfterClean;
+
+    log.debug(`[VINRetrieverLIB] isValidCommandResponse: Checks for "${cleaned}": isOk=${isOk}, endsWith62=${endsWith62}, isElm=${isElm}, isEmpty=${isEmptyAfterClean}. Result: ${isValid}`);
+
+    return isValid;
   }
 
   private async executeCommandSequence(
     commands: ReadonlyArray<CommandConfig>,
+    failFast: boolean = true, // Add option to fail immediately on invalid response
   ): Promise<boolean> {
     for (const { cmd, delay: baseDelay } of commands) {
       const response = await this.sendCommand(cmd);
       const isValid = this.isValidCommandResponse(response);
       this.adjustAdaptiveTiming(isValid); // Adjust timing based on response validity
       if (!isValid) {
-        log.debug(
+        log.warn( // Changed to warn, but check failFast
           `[VINRetrieverLIB] Command ${cmd} response invalid:`,
           response,
         );
-        // Decide if this should be fatal or just a warning
-        // return false; // Make it fatal for critical init steps
+        if (failFast) {
+          log.error(
+            `[VINRetrieverLIB] Critical command ${cmd} failed. Aborting sequence.`,
+          );
+          return false; // Make it fatal for critical init steps if failFast is true
+        }
+      } else {
+        log.debug(`[VINRetrieverLIB] Command ${cmd} successful.`);
       }
       await this.delay(baseDelay); // Use the adaptive delay mechanism
     }
@@ -442,29 +470,31 @@ export class VINRetriever {
       // Let's skip ATZ for now to avoid disrupting the connection.
       // If issues persist, we might need `ATZ` but it's risky.
 
-      // 3. Basic ELM Setup (Pre-Protocol)
+      // 3. Basic ELM Setup (Pre-Protocol) - Fail fast if these fail
       log.debug('[VINRetrieverLIB] Sending pre-protocol init sequence...');
       if (
         !(await this.executeCommandSequence(
           VIN_CONSTANTS.INIT_SEQUENCE_PRE_PROTOCOL,
+          true, // Fail fast is true for these critical commands
         ))
       ) {
         log.error('[VINRetrieverLIB] Pre-protocol initialization failed.');
         return false;
       }
 
-      // 4. Set Protocol Explicitly
+      // 4. Set Protocol Explicitly - Fail fast
       const protocolCmd = `ATSP${currentProtocol}`; // Use validated currentProtocol
       log.debug(
         `[VINRetrieverLIB] Setting protocol explicitly: ${protocolCmd}`,
       );
       const spResponse = await this.sendCommand(protocolCmd);
-      this.adjustAdaptiveTiming(this.isValidCommandResponse(spResponse));
-      if (!this.isValidCommandResponse(spResponse)) {
+      const isSpValid = this.isValidCommandResponse(spResponse);
+      this.adjustAdaptiveTiming(isSpValid);
+      if (!isSpValid) {
         log.error(
-          `[VINRetrieverLIB] Failed to set protocol ${currentProtocol}. Response: ${spResponse}`,
+          `[VINRetrieverLIB] Failed to set protocol ${currentProtocol}. Response: ${spResponse}. Aborting.`,
         );
-        return false;
+        return false; // Fail fast
       }
       await this.delay(VIN_CONSTANTS.DELAYS.PROTOCOL);
 
@@ -492,28 +522,29 @@ export class VINRetriever {
       }
       log.debug(`[VINRetrieverLIB] Using CAN config: ${config.desc}`);
 
-      // 6. Setup Adaptive Timing (based on config)
+      // 6. Setup Adaptive Timing (based on config) - Don't fail fast here
       await this.setupAdaptiveTiming(config.adaptiveTimingMode);
 
-      // 7. Apply Post-Protocol / CAN Specific Init (Filters, etc.)
+      // 7. Apply Post-Protocol / CAN Specific Init (Filters, etc.) - Fail fast
       log.debug('[VINRetrieverLIB] Sending CAN specific init sequence...');
       // Use the specific commands from the chosen config
-      if (!(await this.executeCommandSequence(config.commands))) {
+      if (!(await this.executeCommandSequence(config.commands, true))) { // Fail fast
         log.error('[VINRetrieverLIB] CAN specific initialization failed.');
         return false;
       }
 
-      // 8. Set Header (using selected address or default from config)
+      // 8. Set Header (using selected address or default from config) - Fail fast
       const headerToSet = state.selectedEcuAddress || config.header;
       const headerCmd = `ATSH${headerToSet}`;
       log.debug(`[VINRetrieverLIB] Setting header: ${headerCmd}`);
       const shResponse = await this.sendCommand(headerCmd);
-      this.adjustAdaptiveTiming(this.isValidCommandResponse(shResponse));
-      if (!this.isValidCommandResponse(shResponse)) {
+      const isShValid = this.isValidCommandResponse(shResponse);
+      this.adjustAdaptiveTiming(isShValid);
+      if (!isShValid) {
         log.error(
-          `[VINRetrieverLIB] Failed to set header ${headerToSet}. Response: ${shResponse}`,
+          `[VINRetrieverLIB] Failed to set header ${headerToSet}. Response: ${shResponse}. Aborting.`,
         );
-        // Maybe not fatal? Continue but log warning.
+        return false; // Fail fast
       }
       await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
 
@@ -541,32 +572,55 @@ export class VINRetriever {
       });
 
       // Basic validation before detailed check
-      const isValid = response?.rawResponse && response.rawResponse.length > 0;
-      this.adjustAdaptiveTiming(isValid ?? false); // Ensure boolean
+      // Check if rawResponse exists and is not empty
+      const hasData = response?.rawResponse && response.rawResponse.some(chunk => chunk.length > 0);
+      this.adjustAdaptiveTiming(hasData ?? false); // Adjust timing based on whether *any* data was received
 
-      if (isValid && response.rawResponse) {
+      if (hasData && response.rawResponse) {
         // Add check for rawResponse existence
-        const { error } = this.checkResponseForErrors(response.rawResponse);
-        // Allow responses without errors OR specific negative responses that might still contain data (like 7F 09 31)
-        // Or even if there's an error, sometimes the data might be partially there. Let processVINResponse decide.
-        if (
-          !error ||
-          error.includes('Negative Response') ||
-          error.includes('Potential Negative Response')
-        ) {
-          log.debug(
-            `[VINRetrieverLIB] VIN request got potentially valid response (Error: ${error || 'None'}).`,
-          );
-          return response;
+        const { error, cleanHex } = this.checkResponseForErrors(response.rawResponse); // Get cleanHex too
+
+        // Check if the response is NOT a definite error (like CAN ERROR, BUS ERROR, ?, etc.)
+        // Allow 'No Data', 'Timeout', 'Negative Response' as they might be recoverable or expected in some cases before flow control
+        const isRecoverableOrNoError = !error ||
+                                       error === 'No Data' ||
+                                       error === 'Timeout' ||
+                                       error.includes('Negative Response') ||
+                                       error.includes('Potential Negative Response');
+
+        if (isRecoverableOrNoError) {
+           // Also check if we actually got the expected response code (4902) even if errors were flagged
+           const hasVINResponseCode = cleanHex.includes('4902');
+
+           if (hasVINResponseCode) {
+             log.debug(
+               `[VINRetrieverLIB] VIN request attempt ${attempt} got positive response marker (4902). Error status: ${error || 'None'}`,
+             );
+             return response; // Return response if 4902 is present
+           } else if (!error) {
+             log.debug(
+               `[VINRetrieverLIB] VIN request attempt ${attempt} got response without errors, but no 4902 marker. Hex: ${cleanHex}`,
+             );
+             // Consider returning response here too, maybe processVINResponse can handle it?
+             // For now, let's treat lack of 4902 as failure for standard request.
+           } else {
+             log.warn(
+               `[VINRetrieverLIB] VIN request attempt ${attempt} resulted in recoverable error: ${error}. Hex: ${cleanHex}`,
+             );
+             // Proceed to retry or flow control
+           }
         } else {
-          log.warn(
-            `[VINRetrieverLIB] VIN request attempt ${attempt} failed with error: ${error}`,
+          // Definite, non-recoverable error
+          log.error(
+            `[VINRetrieverLIB] VIN request attempt ${attempt} failed with non-recoverable error: ${error}. Hex: ${cleanHex}`,
           );
+          // No retry if it's a definite error like CAN ERROR? Maybe retry anyway? Let's keep retry logic.
         }
       } else {
         log.warn(
-          `[VINRetrieverLIB] VIN request attempt ${attempt} got invalid/empty response.`,
+          `[VINRetrieverLIB] VIN request attempt ${attempt} got invalid/empty/timeout response.`,
         );
+        // Adjust timing already happened based on hasData
       }
 
       // Retry logic
@@ -582,7 +636,7 @@ export class VINRetriever {
     } catch (error) {
       this.adjustAdaptiveTiming(false); // Adjust timing on error
       log.error('[VINRetrieverLIB] VIN request failed with exception:', error);
-      // Retry logic could also be placed here if sendCommandRaw throws on timeout/error
+      // Retry logic for exceptions
       if (attempt < VIN_CONSTANTS.RETRIES) {
         await this.delay(VIN_CONSTANTS.DELAYS.INIT);
         return this.sendVINRequest(attempt + 1);
@@ -594,6 +648,20 @@ export class VINRetriever {
   public async retrieveVIN(): Promise<string | null> {
     log.info('[VINRetrieverLIB] Attempting to retrieve VIN...');
     try {
+      // Capture state *before* async operations within retrieveVIN
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const currentState: any = ecuStore.getState(); // Use any to bypass type checking
+      const currentProtocol = currentState.activeProtocol;
+      const selectedEcuAddress = currentState.selectedEcuAddress;
+
+      log.info(
+        JSON.stringify({
+          currentProtocol,
+          selectedEcuAddress,
+          currentState
+        })
+      );
+
       if (!(await this.initializeDevice())) {
         log.error(
           '[VINRetrieverLIB] VIN retrieval failed during initialization.',
@@ -604,15 +672,32 @@ export class VINRetriever {
       // Try standard request first (with retries handled internally)
       let response = await this.sendVINRequest();
 
-      // If standard request failed, try variations with flow control
-      if (
-        !response?.rawResponse ||
-        this.checkResponseForErrors(response.rawResponse).error
-      ) {
+      // Check if the response is valid *before* trying flow control
+      // A valid response here means it contains '4902'
+      let needsFlowControl = true;
+      if (response?.rawResponse) {
+          const { cleanHex } = this.checkResponseForErrors(response.rawResponse);
+          if (cleanHex.includes('4902')) {
+              log.info('[VINRetrieverLIB] Standard VIN request successful (found 4902).');
+              needsFlowControl = false;
+          } else {
+              log.info('[VINRetrieverLIB] Standard VIN request did not contain 4902, proceeding to flow control.');
+          }
+      } else {
+          log.info('[VINRetrieverLIB] Standard VIN request failed or yielded empty response, proceeding to flow control.');
+      }
+
+
+      // If standard request failed OR didn't contain 4902, try variations with flow control
+      if (needsFlowControl) {
         log.info(
-          '[VINRetrieverLIB] Standard VIN request failed or yielded error, trying flow control configurations...',
+          '[VINRetrieverLIB] Trying flow control configurations...',
         );
-        response = await this.tryFlowControl();
+        // Pass the captured state to tryFlowControl
+        response = await this.tryFlowControl(
+          currentProtocol,
+          selectedEcuAddress,
+        );
       }
 
       // Process the response if we have one
@@ -952,21 +1037,33 @@ export class VINRetriever {
     }
   }
 
-  private async tryFlowControl(): Promise<ChunkedResponse | null> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const state: any = ecuStore.getState(); // Use any to bypass type checking
-    // Handle potential null protocol
-    const currentProtocol = state.activeProtocol;
-    if (currentProtocol === null) {
+  /**
+   * Attempts VIN retrieval using different CAN flow control configurations.
+   * @param activeProtocol - The currently active protocol number.
+   * @param selectedEcuAddress - The currently selected ECU address (if any).
+   */
+  private async tryFlowControl(
+    activeProtocol: PROTOCOL | null,
+    selectedEcuAddress: string | null,
+  ): Promise<ChunkedResponse | null> {
+    // Use passed-in parameters instead of ecuStore.getState() here
+    if (activeProtocol === null) {
       log.error(
-        '[VINRetrieverLIB] Cannot attempt flow control: Active protocol is null.',
+        '[VINRetrieverLIB] Cannot attempt flow control: Active protocol is null (passed from caller).',
       );
       return null;
     }
+    // Determine CAN type based on passed-in protocol and address
     const is29Bit =
-      state.selectedEcuAddress?.startsWith('18DA') ||
-      currentProtocol === 7 ||
-      currentProtocol === 9;
+      selectedEcuAddress?.startsWith('18DA') || // Check passed address first
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_500K || // 7
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_250K || // 9
+      activeProtocol === PROTOCOL.SAE_J1939_CAN_29BIT_250K || // 10 (A)
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_500K_4 || // 14 (E)
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_250K_4 || // 16 (10)
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_500K_8 || // 18 (12)
+      activeProtocol === PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8; // 20 (14)
+
     const baseConfig = is29Bit
       ? VIN_CONSTANTS.CAN_CONFIGS.find(c => c.canType === '29bit')
       : VIN_CONSTANTS.CAN_CONFIGS.find(c => c.canType === '11bit');
