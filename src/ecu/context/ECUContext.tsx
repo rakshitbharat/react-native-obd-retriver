@@ -250,7 +250,12 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           typeof timeout === 'number' ? { timeout } : timeout,
         );
 
-        // Create proper ChunkedResponse object
+        // Validate response structure
+        if (!rawResponse || !Array.isArray(rawResponse.chunks)) {
+          throw new Error('Expected chunked response but received different type');
+        }
+
+        // Create properly typed ChunkedResponse
         const response: ChunkedResponse = {
           chunks: rawResponse.chunks,
           totalBytes: rawResponse.chunks.reduce(
