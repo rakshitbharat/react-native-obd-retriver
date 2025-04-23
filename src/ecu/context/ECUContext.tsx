@@ -252,7 +252,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
         // Validate response structure
         if (!rawResponse || !Array.isArray(rawResponse.chunks)) {
-          throw new Error('Expected chunked response but received different type');
+          throw new Error(
+            'Expected chunked response but received different type',
+          );
         }
 
         // Create properly typed ChunkedResponse

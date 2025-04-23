@@ -161,202 +161,106 @@ export class VINRetriever {
       setTimeout(resolve, ms);
     });
   }
-  /**
-   * Configure adapter specifically for VIN retrieval.
-   * Includes reset, basic settings, protocol detection, ECU header detection, and specific config.
-   */
-  private async _configureAdapterForVIN(): Promise<boolean> {
-    void log.info('[VINRetriever] Configuring adapter for VIN retrieval...');
 
-    if (this.protocolState === PROTOCOL_STATES.READY) {
-      void log.debug('[VINRetriever] Adapter already configured');
-      return true;
-    }
+  private async _initializeForVIN(): Promise<boolean> {
+    // Slow initialization sequence for problematic ECUs
+    const initCommands = [
+      { cmd: 'ATZ', delay: 2000 }, // Longer delay after reset
+      { cmd: 'ATI', delay: 300 }, // Get device info
+      { cmd: 'ATDP', delay: 300 }, // Get protocol
+      { cmd: 'ATE0', delay: 200 }, // Echo off
+      { cmd: 'ATL0', delay: 200 }, // Linefeeds off
+      { cmd: 'ATS0', delay: 200 }, // Spaces off
+      { cmd: 'ATH1', delay: 200 }, // Headers on
+      { cmd: 'ATAT1', delay: 200 }, // Adaptive timing on
+      { cmd: 'ATST64', delay: 200 }, // Set timeout to 100ms (64 = hex 100ms)
+      { cmd: 'ATFCSM1', delay: 200 }, // Enable flow control
+      { cmd: 'ATCAF1', delay: 200 }, // Formatting on
+    ];
 
-    this.protocolState = PROTOCOL_STATES.CONFIGURING;
-
-    try {
-      // Reset adapter first
-      await this.sendCommand('ATZ');
-      await this.delay(1000); // Longer delay after reset
-
-      // Basic configuration commands with better validation
-      const commands = [
-        {
-          cmd: 'ATE0',
-          delay: 200,
-          desc: 'Echo off',
-          validate: (resp: string) =>
-            resp.includes('OK') || resp.includes('ATE0'),
-        },
-        {
-          cmd: 'ATL0',
-          delay: 100,
-          desc: 'Linefeeds off',
-          validate: (resp: string) =>
-            resp.includes('OK') || resp.includes('ATL0'),
-        },
-        {
-          cmd: 'ATS0',
-          delay: 100,
-          desc: 'Spaces off',
-          validate: (resp: string) =>
-            resp.includes('OK') || resp.includes('ATS0'),
-        },
-        {
-          cmd: 'ATH1',
-          delay: 100,
-          desc: 'Headers on',
-          validate: (resp: string) =>
-            resp.includes('OK') || resp.includes('ATH1'),
-        },
-        {
-          cmd: 'ATAT1',
-          delay: 100,
-          desc: 'Adaptive timing on',
-          validate: (resp: string) =>
-            resp.includes('OK') || resp.includes('ATAT1'),
-        },
-      ];
-
-      for (const { cmd, delay, desc, validate } of commands) {
+    for (const { cmd, delay } of initCommands) {
+      try {
         const response = await this.sendCommand(cmd);
-        if (!response || (!validate(response) && !isResponseError(response))) {
-          void log.warn(`[VINRetriever] ${desc} returned: ${response}`);
-          if (cmd === 'ATH1') {
-            throw new Error('Headers must be enabled for VIN retrieval');
-          }
+        if (!response) {
+          void log.warn(`[VINRetriever] No response for ${cmd}`);
+          continue;
         }
         await this.delay(delay);
-      }
-
-      // Verify communication
-      const testResponse = await this.sendCommand('ATI');
-      if (!testResponse || isResponseError(testResponse)) {
-        void log.warn(
-          `[VINRetriever] Communication test failed: ${testResponse}`,
-        );
-        throw new Error('Communication test failed');
-      }
-
-      void log.info('[VINRetriever] Adapter configuration complete');
-      return true;
-    } catch (error) {
-      void log.error('[VINRetriever] Configuration failed:', error);
-      this.protocolState = PROTOCOL_STATES.ERROR;
-      return false;
-    }
-  }
-
-  /**
-   * Applies protocol-specific configurations, including default CAN Flow Control using detected header if available.
-   */
-  private async _configureForProtocol(): Promise<void> {
-    // Only configure if we're already connected
-    if (
-      this.ecuState.status !== ECUConnectionStatus.CONNECTED ||
-      this.ecuState.activeProtocol === null
-    ) {
-      void log.error(
-        `[${this.constructor.name}] ECU not connected or invalid protocol. Cannot configure.`,
-      );
-      this.protocolState = PROTOCOL_STATES.ERROR;
-      return;
-    }
-
-    if (this.isCan) {
-      // Minimal CAN configuration focusing on Flow Control
-      const fcHeader = this.ecuResponseHeader || '7E8';
-
-      const flowControlCommands = [
-        { cmd: `ATFCSH${fcHeader}`, desc: 'Set FC Header' },
-        { cmd: 'ATFCSD300008', desc: 'Set FC Data (BS=0,ST=8ms)' },
-        { cmd: 'ATFCSM1', desc: 'Enable FC' },
-      ];
-
-      for (const { cmd, desc } of flowControlCommands) {
-        try {
-          void log.debug(`[${this.constructor.name}] ${desc}: ${cmd}`);
-          await this.sendCommand(cmd, 2000);
-          await this.delay(DELAYS_MS.COMMAND_SHORT);
-        } catch (error) {
-          void log.warn(
-            `[${this.constructor.name}] Flow Control command failed: ${cmd}`,
-            {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
+      } catch (error) {
+        void log.warn(`[VINRetriever] Error sending ${cmd}:`, error);
       }
     }
-    // No additional configuration needed for other protocols
+    return true;
   }
 
-  /**
-   * Enhanced method to send commands with timing appropriate for the detected protocol.
-   */
-  private async _sendCommandWithTiming(
-    command: string,
-    timeout?: number,
-  ): Promise<string | null> {
-    let effectiveTimeout = timeout ?? VINRetriever.COMMAND_TIMEOUT; // Default
-    // Use longer timeout for non-CAN protocols when sending data request commands
-    if (!this.isCan && command === this.mode) {
-      effectiveTimeout = timeout ?? VINRetriever.DATA_TIMEOUT;
-      void log.debug(
-        `[${this.constructor.name}] Using longer timeout (${effectiveTimeout}ms) for non-CAN VIN request.`,
-      );
-    }
-
-    void log.debug(
-      `[${this.constructor.name}] Sending command "${command}" with timeout ${effectiveTimeout}ms`,
-    );
-    // The injected sendCommand handles the actual sending and timeout logic
-    return await this.sendCommand(command, effectiveTimeout);
-  }
-
-  /**
-   * Check if a response string indicates an ELM or OBD error.
-   * Uses imported isResponseError helper, treats null response as error.
-   */
   private isErrorResponse(response: string | null): boolean {
     return response === null || isResponseError(response);
   }
 
+  /**
+   * Check for negative response codes from ECU
+   * @param response The response string to check
+   * @returns true if response indicates an error or unsupported command
+   */
   private isNegativeResponse(response: string): boolean {
-    // Check for 7F responses which indicate "not supported" or other errors
+    // Common negative response codes:
+    // 7F 09 11 = service not supported
+    // 7F 09 12 = subfunction not supported
+    // 7F 09 31 = request out of range
     const negativeMatch = response.match(/7F\s*09\s*([0-9A-F]{2})/i);
     if (negativeMatch) {
       const nrcCode = negativeMatch[1];
-      void log.warn('[VINRetriever] Received negative response:', { 
+      void log.warn('[VINRetriever] Negative response:', {
         code: nrcCode,
-        meaning: this.getNrcMeaning(nrcCode)
+        meaning: this.getNrcMeaning(nrcCode),
       });
       return true;
     }
     return false;
   }
 
+  /**
+   * Get human-readable meaning of NRC (Negative Response Code)
+   */
   private getNrcMeaning(nrcCode: string): string {
     const nrcMeanings: Record<string, string> = {
       '11': 'Service not supported',
       '12': 'Sub-function not supported',
       '31': 'Request out of range',
       '33': 'Security access denied',
-      '7F': 'General reject'
+      '7F': 'General reject',
     };
     return nrcMeanings[nrcCode.toUpperCase()] || 'Unknown error';
   }
 
-  // Add interface for library errors
-  private isBluetoothLibraryError(error: unknown): boolean {
-    if (!error) return false;
-    const errorObj = error as { constructor?: { name: string } };
-    return (
-      typeof errorObj === 'object' &&
-      errorObj?.constructor?.name?.includes('Ble') ||
-      String(error).toLowerCase().includes('bluetooth')
-    );
+  /**
+   * Configure protocol-specific settings for VIN retrieval
+   */
+  private async _configureForProtocol(): Promise<void> {
+    if (!this.isCan || !this.ecuResponseHeader) {
+      void log.debug(
+        '[VINRetriever] Skipping protocol config - not CAN or no ECU header',
+      );
+      return;
+    }
+
+    const flowControlCommands = [
+      { cmd: `ATFCSH${this.ecuResponseHeader}`, desc: 'Set FC Header' },
+      { cmd: 'ATFCSD300008', desc: 'Set FC Data (BS=0,ST=8ms)' },
+      { cmd: 'ATFCSM1', desc: 'Enable FC' },
+    ];
+
+    for (const { cmd, desc } of flowControlCommands) {
+      try {
+        void log.debug(`[VINRetriever] ${desc}: ${cmd}`);
+        await this.sendCommand(cmd, 2000);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      } catch (error) {
+        void log.warn(`[VINRetriever] Flow Control command failed: ${cmd}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   public async retrieveVIN(): Promise<string | null> {
@@ -371,111 +275,83 @@ export class VINRetriever {
     while (attempt < maxAttempts) {
       attempt++;
       try {
-        // Configure adapter if needed
-        const configResult = await this._configureAdapterForVIN();
-        if (!configResult) {
-          void log.warn(`[VINRetriever] Adapter configuration failed on attempt ${attempt}`);
-          continue;
-        }
+        // Initialize with slower sequence first
+        await this._initializeForVIN();
 
-        try {
-          // Use bluetoothSendCommandRawChunked with library error detection
-          const rawResponse = await this.bluetoothSendCommandRawChunked('0902', {
-            timeout: VINRetriever.DATA_TIMEOUT,
-          });
+        // Try different request variants
+        const vinRequests = [
+          '0902', // Standard request
+          '0902FF', // Some ECUs need this variant
+          '09020000', // Some ECUs need padding
+        ];
 
-          // Validate raw response structure
-          if (!rawResponse?.chunks?.length) {
-            void log.warn(`[VINRetriever] Invalid chunked response on attempt ${attempt}`);
-            continue;
-          }
+        for (const request of vinRequests) {
+          try {
+            const rawResponse = await this.bluetoothSendCommandRawChunked(
+              request,
+              {
+                timeout: VINRetriever.DATA_TIMEOUT,
+              },
+            );
 
-          // Process each chunk with error handling
-          const processedChunks: string[] = [];
-          const decoder = new TextDecoder();
+            // Validate raw response structure
+            if (!rawResponse?.chunks?.length) {
+              void log.warn(
+                `[VINRetriever] Invalid chunked response on attempt ${attempt}`,
+              );
+              continue;
+            }
 
-          // Log raw chunks for debugging
-          void log.debug('[VINRetriever] Raw chunks received:', 
-            rawResponse.chunks.map(chunk => Array.from(chunk)));
+            // Process each chunk with error handling
+            const processedChunks: string[] = [];
+            const decoder = new TextDecoder();
 
-          for (const chunk of rawResponse.chunks) {
-            try {
-              if (!(chunk instanceof Uint8Array)) {
-                void log.warn('[VINRetriever] Invalid chunk type, expected Uint8Array');
+            for (const chunk of rawResponse.chunks) {
+              try {
+                if (!(chunk instanceof Uint8Array)) continue;
+                const decodedChunk = decoder.decode(chunk).trim();
+                // Only add non-empty chunks that aren't just terminators
+                if (decodedChunk && !decodedChunk.match(/^[\r\n>]*$/)) {
+                  processedChunks.push(decodedChunk);
+                }
+              } catch (e) {
                 continue;
               }
-              const decodedChunk = decoder.decode(chunk).trim();
-              if (decodedChunk && !decodedChunk.match(/^[\r\n>]*$/)) {
-                processedChunks.push(decodedChunk);
-              }
-            } catch (e) {
-              void log.warn('[VINRetriever] Error decoding chunk:', e);
+            }
+
+            const stringResponse = processedChunks
+              .join(' ')
+              .replace(/[\r\n>]/g, '')
+              .trim();
+
+            // If we got a negative response, try next variant
+            if (this.isNegativeResponse(stringResponse)) {
+              void log.warn(
+                `[VINRetriever] ECU rejected ${request}, trying next variant...`,
+              );
               continue;
             }
+
+            const vin = parseVinFromResponse(stringResponse);
+            if (vin) return vin;
+          } catch (error) {
+            // Only log and continue to next variant
+            void log.warn(`[VINRetriever] Error with ${request}:`, error);
           }
-
-          // Combine and clean processed chunks
-          const stringResponse = processedChunks
-            .join(' ')
-            .replace(/[\r\n>]/g, '')
-            .trim();
-
-          void log.debug('[VINRetriever] Processed response:', stringResponse);
-
-          // Check for negative response before attempting to parse VIN
-          if (this.isNegativeResponse(stringResponse)) {
-            void log.warn(`[VINRetriever] ECU rejected VIN request on attempt ${attempt}`);
-            // Try protocol-specific configuration before next attempt
-            await this._configureForProtocol();
-            if (attempt < maxAttempts) {
-              await this.delay(DELAYS_MS.RETRY);
-              continue;
-            }
-            return null;
-          }
-
-          // Continue with VIN parsing...
-          const vin = parseVinFromResponse(stringResponse);
-          
-          if (vin) {
-            void log.info(`[VINRetriever] VIN retrieved successfully: ${vin}`);
-            return vin;
-          }
-
-          void log.warn(
-            `[VINRetriever] Failed to parse VIN from response on attempt ${attempt}`,
-            { response: stringResponse },
-          );
-
-          if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
-
-        } catch (error: unknown) {
-          // Handle library-specific errors with proper typing
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          void log.error('[VINRetriever] Library Error:', {
-            error: errorMsg,
-            errorType: error instanceof Error ? error.constructor.name : 'Unknown',
-            attempt,
-            source: 'bluetooth-library',
-          });
-          
-          // Check if it's a library-specific error using helper method
-          if (this.isBluetoothLibraryError(error)) {
-            if (attempt < maxAttempts) {
-              void log.info('[VINRetriever] Detected library error, retrying after delay...');
-              await this.delay(DELAYS_MS.RETRY * 2); // Longer delay for library errors
-              continue;
-            }
-          }
-          throw error; // Re-throw if it's not a library error or we're out of attempts
         }
-      } catch (error: unknown) {
+
+        // If we get here, no variant worked, try protocol config
+        if (attempt < maxAttempts) {
+          await this._configureForProtocol();
+          await this.delay(DELAYS_MS.RETRY * 2);
+        }
+      } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         void log.error(`[VINRetriever] Error on attempt ${attempt}:`, {
           error: errorMsg,
           stack: error instanceof Error ? error.stack : undefined,
         });
-        
+
         if (attempt < maxAttempts) {
           await this.delay(DELAYS_MS.RETRY);
           continue;
