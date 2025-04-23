@@ -661,21 +661,40 @@ export class VINRetriever {
         log.warn(
           `[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`,
         );
+        
+        // Function to check if error contains NRC 31 in any format
+        const hasNRC31 = (error: string) => {
+          const errorLower = error.toLowerCase();
+          return (
+            errorLower.includes('nrc: 31') || 
+            errorLower.includes('mode echo') && errorLower.includes('31') ||
+            errorLower.includes('7f 09 31') || // Add check for VIN-specific format
+            errorLower.includes('7f09 31') ||  // Alternative format without space
+            errorLower.includes('7f0931')      // Fully concatenated format
+          );
+        };
+
         // Determine if FC retry is warranted based on the error type
         const retryFCErrors = [
           'Timeout',
           'Buffer Full',
-          'Negative Response (NRC: 31)',
-          'Negative Response (NRC: 22)',
-          'Potential Negative Response (NRC: 31)',
+          'NRC: 31',
+          'NRC: 22',
+          '7F 09 31', // Add VIN-specific format
         ];
-        // Add detailed logging inside the .some() callback
-        const isRetryableError = retryFCErrors.some(e => {
-          const includesResult = initialError.includes(e);
-          log.debug('[VINRetriever] Comparing error strings for retry:', { // <-- Add detailed log here
-            initialError: `"${initialError}"`, // Enclose in quotes for clarity
-            retryErrorString: `"${e}"`,       // Enclose in quotes for clarity
+
+        // First check for NRC 31 specifically, then other errors
+        const isRetryableError = hasNRC31(initialError) || retryFCErrors.some(e => {
+          const normalizedInitialError = initialError.toLowerCase().replace(/\s+/g, ' ').trim();
+          const normalizedRetryErrorString = e.toLowerCase().replace(/\s+/g, ' ').trim();
+
+          const includesResult = normalizedInitialError.includes(normalizedRetryErrorString);
+          log.debug('[VINRetriever] Comparing error strings for retry:', {
+            initialError: normalizedInitialError,
+            retryError: normalizedRetryErrorString,
             includesResult,
+            // Add raw hex pattern check for debugging
+            hasHexPattern: /7f\s*09\s*31/i.test(normalizedInitialError),
           });
           return includesResult;
         });
