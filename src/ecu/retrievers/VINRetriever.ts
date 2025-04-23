@@ -30,20 +30,24 @@ type ProtocolState = (typeof PROTOCOL_STATES)[keyof typeof PROTOCOL_STATES];
 
 interface FlowControlCommand {
   readonly cmd: string;
-  readonly desc: string;
+  readonly desc: string; 
   readonly timeout?: number;
 }
 
 export class VINRetriever {
-  static SERVICE_MODE: ServiceMode = {
-    REQUEST: STANDARD_PIDS.VIN,
-    RESPONSE: 0x49,
+  static readonly SERVICE_MODE: ServiceMode = {
+    REQUEST: STANDARD_PIDS.VIN,  // '0902'
+    RESPONSE: 0x49, // 73 decimal
     NAME: 'VEHICLE_VIN',
     DESCRIPTION: 'Vehicle Identification Number',
     troubleCodeType: 'INFO',
   };
 
-  private static readonly DATA_TIMEOUT = 10000;
+  private static readonly MAX_RETRIES = 3;
+  private static readonly DELAY_MS = 2000;
+
+  // Lock to prevent parallel VIN retrievals
+  private static isRetrieving = false;
 
   private readonly sendCommand: SendCommandFunction;
   private readonly bluetoothSendCommandRawChunked: (
@@ -195,7 +199,7 @@ export class VINRetriever {
     for (const { cmd, desc } of flowControlCommands) {
       try {
         void log.debug(`[VINRetriever] ${desc}: ${cmd}`);
-        await this.sendCommand(cmd, 2000);
+        await this.sendCommand(cmd);
         await this.delay(DELAYS_MS.COMMAND_SHORT);
       } catch (error) {
         void log.warn(`[VINRetriever] Flow Control command failed: ${cmd}`, {
@@ -223,7 +227,7 @@ export class VINRetriever {
     for (const {cmd, desc, timeout} of fcCommands) {
       try {
         void log.debug(`[VINRetriever] ${desc}: ${cmd}`);
-        const response = await this.sendCommand(cmd, timeout && { timeout });
+        const response = await this.sendCommand(cmd);
         
         if (!response || isResponseError(response)) {
           void log.warn(`[VINRetriever] Flow Control command failed: ${cmd}`);
@@ -247,17 +251,16 @@ export class VINRetriever {
 
   private async _sendVinRequest(request: string): Promise<ChunkedResponse | null> {
     try {
-      const timeout: { timeout: number } = { timeout: VINRetriever.DATA_TIMEOUT };
-      
       const fcConfigured = await this._configureFlowControl();
       if (!fcConfigured) {
         void log.warn('[VINRetriever] Flow control configuration failed');
       }
 
-      const response = await this.bluetoothSendCommandRawChunked(request, timeout);
+      // Remove timeout parameter, let device handle timing
+      const response = await this.bluetoothSendCommandRawChunked(request);
       
       // Disable flow control after request
-      await this.sendCommand('ATFCSM0', { timeout: 2000 });
+      await this.sendCommand('ATFCSM0');
       
       return response;
     } catch (error) {
@@ -270,75 +273,94 @@ export class VINRetriever {
     }
   }
 
+  /**
+   * Retrieves the Vehicle Identification Number (VIN) from the ECU
+   * Using ISO-15765 protocol for CAN networks or ISO-14230 for K-Line
+   * 
+   * @returns Promise resolving to 17-character VIN string or null if retrieval fails
+   */
   public async retrieveVIN(): Promise<string | null> {
-    const currentState = ecuStore.getState();
-    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
-      void log.error('[VINRetriever] ECU not connected');
+    // Prevent parallel retrievals
+    if (VINRetriever.isRetrieving) {
+      void log.warn('[VINRetriever] VIN retrieval already in progress');
       return null;
     }
 
-    // Update protocol settings from store
-    this.protocolNumber = currentState.activeProtocol ?? PROTOCOL.AUTO;
-    this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
-    this.ecuResponseHeader = currentState.selectedEcuAddress ?? 
-                           currentState.detectedEcuAddresses?.[0] ?? 
-                           null;
+    VINRetriever.isRetrieving = true;
 
-    let attempt = 0;
-    const maxAttempts = 3;
+    try {
+      const currentState = ecuStore.getState();
+      if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+        void log.error('[VINRetriever] ECU not connected');
+        return null;
+      }
 
-    while (attempt < maxAttempts) {
-      attempt++;
-      try {
-        await this._initializeForVIN();
+      // Update protocol settings from store
+      this.protocolNumber = currentState.activeProtocol ?? PROTOCOL.AUTO;
+      this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
+      this.ecuResponseHeader = currentState.selectedEcuAddress ?? 
+                             currentState.detectedEcuAddresses?.[0] ?? 
+                             null;
 
-        const vinRequests = [
-          '0902',      // Standard
-          '0902FF',    // Extended
-          '09020000'   // Padded
-        ];
+      let attempt = 0;
 
-        for (const request of vinRequests) {
-          const rawResponse = await this._sendVinRequest(request);
-          if (!rawResponse) continue;
+      while (attempt < VINRetriever.MAX_RETRIES) {
+        attempt++;
+        
+        try {
+          await this._initializeForVIN();
 
-          // Process response...
-          const hexResponse = this.processResponseChunks(rawResponse.chunks);
-          void log.debug('[VINRetriever] Hex response:', hexResponse);
+          const vinRequests = [
+            '0902',      // Standard
+            '0902FF',    // Extended
+            '09020000'   // Padded
+          ];
 
-          if (this.isNegativeResponse(hexResponse)) {
-            void log.warn(`[VINRetriever] ECU rejected ${request}`);
-            continue;
+          for (const request of vinRequests) {
+            const rawResponse = await this._sendVinRequest(request);
+            if (!rawResponse) continue;
+
+            // Process response...
+            const hexResponse = this.processResponseChunks(rawResponse.chunks);
+            void log.debug('[VINRetriever] Hex response:', hexResponse);
+
+            if (this.isNegativeResponse(hexResponse)) {
+              void log.warn(`[VINRetriever] ECU rejected ${request}`);
+              continue; 
+            }
+
+            const vin = parseVinFromResponse(hexResponse);
+            if (vin) {
+              void log.info(`[VINRetriever] Found VIN: ${vin}`);
+              return vin;
+            }
           }
 
-          const vin = parseVinFromResponse(hexResponse);
-          if (vin) {
-            void log.info(`[VINRetriever] Found VIN: ${vin}`);
-            return vin;
+          // Configure protocol using text-based AT commands
+          if (attempt < VINRetriever.MAX_RETRIES) {
+            await this._configureForProtocol();
+            await this.delay(VINRetriever.DELAY_MS);
           }
-        }
 
-        // Configure protocol using text-based AT commands
-        if (attempt < maxAttempts) {
-          await this._configureForProtocol();
-          await this.delay(DELAYS_MS.RETRY * 2);
-        }
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        void log.error(`[VINRetriever] Error on attempt ${attempt}:`, {
-          error: errorMsg,
-          stack: error instanceof Error ? error.stack : undefined,
-        });
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          void log.error(`[VINRetriever] Error on attempt ${attempt}:`, {
+            error: errorMsg,
+            stack: error instanceof Error ? error.stack : undefined,
+          });
 
-        if (attempt < maxAttempts) {
-          await this.delay(DELAYS_MS.RETRY);
-          continue;
+          if (attempt < VINRetriever.MAX_RETRIES) {
+            await this.delay(VINRetriever.DELAY_MS);
+          }
         }
       }
-    }
 
-    void log.error('[VINRetriever] Failed to retrieve VIN after all attempts');
-    return null;
+      void log.error('[VINRetriever] Failed to retrieve VIN after all attempts');
+      return null;
+
+    } finally {
+      VINRetriever.isRetrieving = false;
+    }
   }
 
   public resetState(): void {
