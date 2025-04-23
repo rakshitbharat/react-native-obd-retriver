@@ -22,6 +22,7 @@ import {
 
 import type {
   SendCommandFunction,
+  SendCommandFunctionWithResponse,
   RawDTCResponse,
   ChunkedResponse,
 } from '../utils/types';
@@ -563,10 +564,7 @@ export const disconnectFromECU = async (
  */
 export const getVehicleVIN = async (
   sendCommand: SendCommandFunction,
-  sendCommandRawChunked: (
-    command: string,
-    timeout?: number | { timeout?: number },
-  ) => Promise<ChunkedResponse>,
+  sendCommandRawChunked: SendCommandFunctionWithResponse
 ): Promise<string | null> => {
   await log.debug(
     '[connectionService] Attempting to retrieve VIN using VINRetriever...',

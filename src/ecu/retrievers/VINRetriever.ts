@@ -56,37 +56,6 @@ export class VINRetriever {
   }
 
   /**
-   * Initialize device for VIN retrieval
-   * Simplified: Removes ATZ reset. Ensures correct protocol and settings are active.
-   */
-  private async initializeDevice(): Promise<boolean> {
-    try {
-      // Don't reset device (ATZ) here, rely on main connection sequence
-      log.debug('[VINRetriever] Ensuring correct protocol settings...');
-      // Removed ATZ command and delay as it received an error in logs (7F 01 31)
-      // await this.sendCommand('ATZ');
-      // await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for reset
-
-      // Configure for ISO 15765-4 CAN (if applicable)
-      if (this.currentState.activeProtocol === 6) {
-        log.debug('[VINRetriever] Re-applying CAN protocol settings (ATSP6, ATH1, ATCAF1)...');
-        // Re-apply settings just in case, but avoid full reset
-        await this.sendCommand('ATSP6'); // Set Protocol to CAN 11/500
-        await this.sendCommand('ATH1'); // Headers on (Important for ECU detection/response parsing)
-        await this.sendCommand('ATCAF1'); // Formatting on (May handle multi-frame responses)
-        log.debug('[VINRetriever] CAN protocol settings applied.');
-      } else {
-        log.debug('[VINRetriever] Not a CAN protocol, skipping CAN-specific setup.');
-      }
-
-      return true;
-    } catch (error) {
-      log.error('[VINRetriever] Failed to initialize device settings:', error);
-      return false;
-    }
-  }
-
-  /**
    * Process VIN response chunks using line-based filtering.
    */
   private processVINResponse(chunks: Uint8Array[]): string | null {
@@ -190,19 +159,14 @@ export class VINRetriever {
 
   public async retrieveVIN(): Promise<string | null> {
     try {
-      // Initialize device
-      const initialized = await this.initializeDevice();
-      if (!initialized) {
-        log.error('[VINRetriever] Failed to initialize device for VIN retrieval'); // Corrected log message
-        return null;
-      }
+      log.debug('[VINRetriever] Assuming device is already initialized by connection service.');
   
       // Request VIN
       log.debug('[VINRetriever] Sending VIN request (0902)...');
       const response = await this.bluetoothSendCommandRawChunked('0902');
       console.log('Response:', response); // Keep this for debugging
       if (!response?.chunks || response.chunks.length === 0) { // Check for empty chunks array
-        log.error('[VINRetriever] No response or empty chunks received from ECU for 0902'); // Corrected log message
+        log.error('[VINRetriever] No response or empty chunks received from ECU for 0902');
         return null;
       }
   
@@ -225,7 +189,7 @@ export class VINRetriever {
         return vin;
       }
   
-      log.warn('[VINRetriever] Failed to extract valid VIN from response after processing.'); // Corrected log message
+      log.warn('[VINRetriever] Failed to extract valid VIN from response after processing.');
       return null;
     } catch (error) {
       log.error('[VINRetriever] Error retrieving VIN:', error);
