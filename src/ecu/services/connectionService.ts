@@ -508,7 +508,7 @@ export const disconnectFromECU = async (
       { error: errorMsg },
     );
   }
-}
+};
 
 // ==========================================================================
 // --- NON-ECU FUNCTIONS (VIN, DTC, CLEAR, RAW DTC) ---

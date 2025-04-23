@@ -238,7 +238,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           '[ECUContext] Attempted to send raw command while Bluetooth disconnected or chunked function unavailable:',
           { command },
         );
-        throw new Error('Bluetooth not connected or chunked function unavailable');
+        throw new Error(
+          'Bluetooth not connected or chunked function unavailable',
+        );
       }
 
       try {
@@ -249,7 +251,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
 
         // Call the imported chunked function from the hook
         const hookResponse: BluetoothChunkedResponse =
-          await bluetoothSendCommandRawChunked( // Use the function from the hook
+          await bluetoothSendCommandRawChunked(
+            // Use the function from the hook
             command,
             typeof timeout === 'number' ? { timeout } : timeout,
           );
