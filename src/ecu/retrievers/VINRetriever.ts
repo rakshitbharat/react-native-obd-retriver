@@ -2,7 +2,7 @@
 import { log } from '../../utils/logger';
 import { DELAYS_MS, RESPONSE_KEYWORDS, ELM_COMMANDS } from '../utils/constants';
 import { isResponseError } from '../utils/helpers'; // Import helpers
-import { bytesToHex as utilBytesToHex } from '../utils/ecuUtils'; // Use ecuUtils for consistency
+import { bytesToHex, bytesToString, bytesToHex as utilBytesToHex } from '../utils/ecuUtils'; // Use ecuUtils for consistency
 
 import type {
   SendCommandFunction,
@@ -199,16 +199,19 @@ export class VINRetriever {
     // This assumes a structure like [Header?] [Mode Echo] [PID Echo] [NRC]
     // Check if cleanHex has at least 6 chars and the 5th/6th chars are '31'
     // And ensure it doesn't start with '4902' (positive response)
-    else if (result.cleanHex.length >= 6 && result.cleanHex.substring(4, 6) === '31' && !result.cleanHex.includes('4902')) {
-        const potentialModeEcho = result.cleanHex.substring(0, 2); // Might not be standard echo
-        const potentialPidEcho = result.cleanHex.substring(2, 4); // Might not be standard echo
-        const nrc = '31';
-        result.error = `Potential Negative Response (NRC: ${nrc})`;
-        log.warn(
-          `[VINRetriever] Received Potential Negative Response (NRC: ${nrc}). Pattern: ${potentialModeEcho} ${potentialPidEcho} ${nrc}. Full Hex: ${result.cleanHex}`,
-        );
+    else if (
+      result.cleanHex.length >= 6 &&
+      result.cleanHex.substring(4, 6) === '31' &&
+      !result.cleanHex.includes('4902')
+    ) {
+      const potentialModeEcho = result.cleanHex.substring(0, 2); // Might not be standard echo
+      const potentialPidEcho = result.cleanHex.substring(2, 4); // Might not be standard echo
+      const nrc = '31';
+      result.error = `Potential Negative Response (NRC: ${nrc})`;
+      log.warn(
+        `[VINRetriever] Received Potential Negative Response (NRC: ${nrc}). Pattern: ${potentialModeEcho} ${potentialPidEcho} ${nrc}. Full Hex: ${result.cleanHex}`,
+      );
     }
-
 
     log.debug('[VINRetriever] checkResponseForErrors result:', {
       error: result.error,
@@ -293,18 +296,18 @@ export class VINRetriever {
             await this.sendCommandRaw('0902', { timeout: 15000 }); // Use options object
 
           // Check the response and log the result for this specific config attempt
-          const { error: retryError, rawString: retryRawString } = this.checkResponseForErrors(
-            retryResponse?.rawResponse,
-          );
+          const { error: retryError, rawString: retryRawString } =
+            this.checkResponseForErrors(retryResponse?.rawResponse);
 
           // Log the outcome of this specific FC attempt
           log.debug(`[VINRetriever] FC Retry Attempt Result (${config.desc})`, {
-              error: retryError,
-              // Log the raw string (cleaned for readability) if available
-              rawString: retryRawString ? retryRawString.replace(/[^\x20-\x7E]/g, '.') : 'N/A',
-              responseReceived: !!retryResponse,
+            error: retryError,
+            // Log the raw string (cleaned for readability) if available
+            rawString: retryRawString
+              ? retryRawString.replace(/[^\x20-\x7E]/g, '.')
+              : 'N/A',
+            responseReceived: !!retryResponse,
           });
-
 
           if (retryResponse && !retryError) {
             log.info(
@@ -617,6 +620,14 @@ export class VINRetriever {
         timeout: 15000,
       });
 
+      log.debug(
+        '[VINRetriever] Initial response received. Checking for errors...',
+        {
+          responseInHex: utilBytesToHex(response?.rawResponse ?? []),
+          responseInString: bytesToString(response?.rawResponse ?? []),
+        },
+      );
+
       // Log initial rawResponse received
       if (response?.rawResponse) {
         // Check rawResponse instead of chunks
@@ -646,31 +657,33 @@ export class VINRetriever {
 
       // Check initial response for errors using rawResponse
       log.debug('[VINRetriever] About to check initial response for errors...');
-      const { error: initialError, rawString: initialRawStringChecked } = this.checkResponseForErrors(
-        response?.rawResponse,
-      );
+      const { error: initialError, rawString: initialRawStringChecked } =
+        this.checkResponseForErrors(response?.rawResponse);
       log.debug('[VINRetriever] Initial response check completed.', {
         initialError: initialError,
-        initialRawStringChecked: initialRawStringChecked ? initialRawStringChecked.replace(/[^\x20-\x7E]/g, '.') : 'N/A',
+        initialRawStringChecked: initialRawStringChecked
+          ? initialRawStringChecked.replace(/[^\x20-\x7E]/g, '.')
+          : 'N/A',
       });
-
 
       // If initial response had errors potentially related to flow control, attempt retry
       if (initialError) {
-        log.debug('[VINRetriever] Initial error detected. Checking if retryable...');
+        log.debug(
+          '[VINRetriever] Initial error detected. Checking if retryable...',
+        );
         log.warn(
           `[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`,
         );
-        
+
         // Function to check if error contains NRC 31 in any format
         const hasNRC31 = (error: string) => {
           const errorLower = error.toLowerCase();
           return (
-            errorLower.includes('nrc: 31') || 
-            errorLower.includes('mode echo') && errorLower.includes('31') ||
+            errorLower.includes('nrc: 31') ||
+            (errorLower.includes('mode echo') && errorLower.includes('31')) ||
             errorLower.includes('7f 09 31') || // Add check for VIN-specific format
-            errorLower.includes('7f09 31') ||  // Alternative format without space
-            errorLower.includes('7f0931')      // Fully concatenated format
+            errorLower.includes('7f09 31') || // Alternative format without space
+            errorLower.includes('7f0931') // Fully concatenated format
           );
         };
 
@@ -684,24 +697,37 @@ export class VINRetriever {
         ];
 
         // First check for NRC 31 specifically, then other errors
-        const isRetryableError = hasNRC31(initialError) || retryFCErrors.some(e => {
-          const normalizedInitialError = initialError.toLowerCase().replace(/\s+/g, ' ').trim();
-          const normalizedRetryErrorString = e.toLowerCase().replace(/\s+/g, ' ').trim();
+        const isRetryableError =
+          hasNRC31(initialError) ||
+          retryFCErrors.some(e => {
+            const normalizedInitialError = initialError
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
+            const normalizedRetryErrorString = e
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
 
-          const includesResult = normalizedInitialError.includes(normalizedRetryErrorString);
-          log.debug('[VINRetriever] Comparing error strings for retry:', {
-            initialError: normalizedInitialError,
-            retryError: normalizedRetryErrorString,
-            includesResult,
-            // Add raw hex pattern check for debugging
-            hasHexPattern: /7f\s*09\s*31/i.test(normalizedInitialError),
+            const includesResult = normalizedInitialError.includes(
+              normalizedRetryErrorString,
+            );
+            log.debug('[VINRetriever] Comparing error strings for retry:', {
+              initialError: normalizedInitialError,
+              retryError: normalizedRetryErrorString,
+              includesResult,
+              // Add raw hex pattern check for debugging
+              hasHexPattern: /7f\s*09\s*31/i.test(normalizedInitialError),
+            });
+            return includesResult;
           });
-          return includesResult;
+        log.debug('[VINRetriever] Retryable check completed.', {
+          isRetryableError,
         });
-        log.debug('[VINRetriever] Retryable check completed.', { isRetryableError });
 
         if (isRetryableError) {
-          log.debug( // This log should appear if retry is triggered
+          log.debug(
+            // This log should appear if retry is triggered
             '[VINRetriever] Triggering Flow Control retry due to error:',
             initialError,
           );
@@ -713,16 +739,22 @@ export class VINRetriever {
             );
             return null; // FC retry also failed
           }
-           // Check the response *after* retry for errors again using rawResponse
-          const { error: retryError } = this.checkResponseForErrors(response?.rawResponse); // Pass rawResponse
-           if(retryError){
-               log.error(`[VINRetriever] Flow control retry response still contained an error: ${retryError}`);
-               return null;
-           }
-           // Add log if retry response seems OK
-           else {
-                log.info('[VINRetriever] Flow control retry response appears valid, proceeding to process.');
-           }
+          // Check the response *after* retry for errors again using rawResponse
+          const { error: retryError } = this.checkResponseForErrors(
+            response?.rawResponse,
+          ); // Pass rawResponse
+          if (retryError) {
+            log.error(
+              `[VINRetriever] Flow control retry response still contained an error: ${retryError}`,
+            );
+            return null;
+          }
+          // Add log if retry response seems OK
+          else {
+            log.info(
+              '[VINRetriever] Flow control retry response appears valid, proceeding to process.',
+            );
+          }
         } else {
           log.warn(
             '[VINRetriever] Skipping Flow Control retry because error is considered definitive:',
@@ -731,7 +763,9 @@ export class VINRetriever {
           return null; // Initial definitive failure
         }
       } else {
-         log.debug('[VINRetriever] No initial error detected. Proceeding to process response.');
+        log.debug(
+          '[VINRetriever] No initial error detected. Proceeding to process response.',
+        );
       }
 
       // If we have a response (either initial or after FC retry)
