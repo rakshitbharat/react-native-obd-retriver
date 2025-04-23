@@ -11,21 +11,22 @@ export class VINRetriever {
    * 
    * Raw response example from actual device for VIN request (0902):
    * {
-   *   r: {
+   *   bluetoothSendCommandRawChunked: {
    *     chunks: [
    *       Uint8Array([48,57,48,50,54,50,13]),           // "090262\r"
    *       Uint8Array([83,69,65,82]),                    // "SEAR"
    *       Uint8Array([67,72,73]),                       // "CHI"
    *       Uint8Array([78,71,46]),                       // "NG."
    *       Uint8Array([46,46,13]),                       // "..\r"
-   *       Uint8Array([55,70,32,48,57,32,51,49,32,13]), // "7F 09 31 \r"
+   *       // Corrected byte array for "7F 09 31 \r"
+   *       new Uint8Array([55, 70, 32, 48, 57, 32, 51, 49, 32, 13]), 
    *       Uint8Array([13,62])                           // "\r>"
    *     ],
    *     totalBytes: 32,
    *     command: "0902"
    *   },
-   *   r_s: "ATZ62\r\r\rELM327 v1.5\r\r>",
-   *   s: {
+   *   sendCommand: "ATZ62\r\r\rELM327 v1.5\r\r>",
+   *   currentState: {
    *     status: "CONNECTED",
    *     activeProtocol: 6,
    *     protocolName: "ISO 15765-4 CAN (11 Bit ID, 500 KBit)",
@@ -34,38 +35,7 @@ export class VINRetriever {
    *     selectedEcuAddress: "7E8"
    *   }
    * }
-   * 
-   * This example shows:
-   * 1. Multi-frame response pattern
-   * 2. SEARCHING... sequence in chunks
-   * 3. Negative response (7F 09 31)
-   * 4. Protocol and ECU details
    */
-  private static readonly REFERENCE_RESPONSE = {
-    r: {
-      chunks: [
-        new Uint8Array([48,57,48,50,54,50,13]),
-        new Uint8Array([83,69,65,82]),
-        new Uint8Array([67,72,73]),
-        new Uint8Array([78,71,46]),
-        new Uint8Array([46,46,13]),
-        new Uint8Array([55,70,32,48,57,32,51,49,32,13]),
-        new Uint8Array([13,62])
-      ],
-      totalBytes: 32,
-      command: "0902"
-    },
-    r_s: "ATZ62\r\r\rELM327 v1.5\r\r>",
-    s: {
-      status: "CONNECTED",
-      activeProtocol: 6,
-      protocolName: "ISO 15765-4 CAN (11 Bit ID, 500 KBit)",
-      deviceVoltage: 14.7,
-      detectedEcuAddresses: ["7E8"],
-      selectedEcuAddress: "7E8"
-    }
-  } as const;
-
   private currentState: any;
   private sendCommand: SendCommandFunction;
   private bluetoothSendCommandRawChunked: SendCommandFunctionWithResponse;
@@ -87,72 +57,115 @@ export class VINRetriever {
 
   /**
    * Initialize device for VIN retrieval
-   * Simplified: Removes explicit flow control setup as it might be handled
-   * by the initial connection sequence or ATCAF1.
+   * Simplified: Removes ATZ reset. Ensures correct protocol and settings are active.
    */
   private async initializeDevice(): Promise<boolean> {
     try {
-      // Reset device
-      log.debug('[VINRetriever] Resetting device (ATZ)...');
-      await this.sendCommand('ATZ');
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for reset
+      // Don't reset device (ATZ) here, rely on main connection sequence
+      log.debug('[VINRetriever] Ensuring correct protocol settings...');
+      // Removed ATZ command and delay as it received an error in logs (7F 01 31)
+      // await this.sendCommand('ATZ');
+      // await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for reset
 
       // Configure for ISO 15765-4 CAN (if applicable)
       if (this.currentState.activeProtocol === 6) {
-        log.debug('[VINRetriever] Configuring CAN protocol (ATSP6, ATH1, ATCAF1)...');
+        log.debug('[VINRetriever] Re-applying CAN protocol settings (ATSP6, ATH1, ATCAF1)...');
+        // Re-apply settings just in case, but avoid full reset
         await this.sendCommand('ATSP6'); // Set Protocol to CAN 11/500
         await this.sendCommand('ATH1'); // Headers on (Important for ECU detection/response parsing)
         await this.sendCommand('ATCAF1'); // Formatting on (May handle multi-frame responses)
-        // Removed explicit flow control commands (ATFCSH, ATFCSD, ATFCSM1)
-        log.debug('[VINRetriever] CAN protocol configured without explicit flow control setup.');
+        log.debug('[VINRetriever] CAN protocol settings applied.');
       } else {
         log.debug('[VINRetriever] Not a CAN protocol, skipping CAN-specific setup.');
       }
 
       return true;
     } catch (error) {
-      log.error('[VINRetriever] Failed to initialize device:', error);
+      log.error('[VINRetriever] Failed to initialize device settings:', error);
       return false;
     }
   }
 
   /**
-   * Process VIN response chunks
+   * Process VIN response chunks using line-based filtering.
    */
   private processVINResponse(chunks: Uint8Array[]): string | null {
     try {
-      // Convert chunks to hex string
-      let fullMessage = '';
+      // Combine all chunks into a single string
+      let combinedString = '';
       for (const chunk of chunks) {
-        fullMessage += this.bytesToHex(chunk);
+        // Handle potential non-Uint8Array chunks if necessary (though logs show Uint8Array)
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
+        combinedString += String.fromCharCode(...bytes);
       }
+      log.debug('[VINRetriever] Combined raw string:', combinedString.replace(/[\x00-\x1F\x7F-\xFF]/g, '.'));
 
-      log.debug('[VINRetriever] Full message:', fullMessage);
+      // Split into lines based on carriage return or line feed
+      const lines = combinedString.split(/[\r\n]+/);
+      log.debug('[VINRetriever] Split lines:', lines);
 
-      // Remove whitespace and normalize
-      const cleanMessage = fullMessage.replace(/\s/g, '').toUpperCase();
+      let relevantHex = '';
+      const obdDataPattern = /^[0-9A-F\s]+$/i; // Pattern for lines containing only hex digits and spaces
+      const obdResponseStart = /^(4902|7F09|10|21|22|30)/i; // Start of positive/negative/multi-frame responses
+      const elmStatusMessages = /^(SEARCHING|OK|>|AT|ELM|STOPPED|BUS INIT|ERROR|NO DATA|UNABLE TO CONNECT|CAN ERROR|BUS BUSY|DATA ERROR|BUFFER FULL|\?|0902)/i; // Patterns to filter out
 
-      // Look for VIN response patterns
-      // Pattern for single frame: 4902 + VIN data
-      // Pattern for multi frame: 0902 + length + VIN data in subsequent frames
-      const singleFrameMatch = cleanMessage.match(/4902([0-9A-F]{34})/);
-      if (singleFrameMatch) {
-        const vinHex = singleFrameMatch[1];
-        const vin = this.hexToAscii(vinHex);
-        if (this.isValidVIN(vin)) return vin;
-      }
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue; // Skip empty lines
 
-      // Handle multi-frame response
-      const firstFrameMatch = cleanMessage.match(/0902(\d+)/);
-      if (firstFrameMatch) {
-        const combinedData = chunks.slice(1).map(chunk => this.bytesToHex(chunk)).join('');
-        const vinMatch = combinedData.match(/49020([0-9A-F]+)/);
-        if (vinMatch) {
-          const vin = this.hexToAscii(vinMatch[1]);
-          if (this.isValidVIN(vin)) return vin;
+        // Filter out known ELM status messages and the echoed command
+        if (elmStatusMessages.test(trimmedLine)) {
+          log.debug('[VINRetriever] Discarding ELM status/echo line:', trimmedLine);
+          continue;
+        }
+
+        // Check if the line looks like OBD data (hex digits and spaces)
+        // OR if it starts with a known OBD response code after potential header (e.g., 7E8 49 02...)
+        // Remove potential header (e.g., 7E8 ) before checking start pattern
+        const potentialObdData = trimmedLine.replace(/^([0-9A-F]{3}\s?)+/, ''); 
+        
+        if (obdDataPattern.test(trimmedLine) && obdResponseStart.test(potentialObdData)) {
+          log.debug('[VINRetriever] Keeping OBD data line:', trimmedLine);
+          relevantHex += trimmedLine.replace(/\s/g, ''); // Add hex data, removing spaces
+        } else {
+          log.debug('[VINRetriever] Discarding non-OBD/unrecognized line:', trimmedLine);
         }
       }
 
+      const cleanMessage = relevantHex.toUpperCase();
+      log.debug('[VINRetriever] Filtered & Cleaned Hex:', cleanMessage);
+
+      if (!cleanMessage) {
+        log.warn('[VINRetriever] No relevant OBD data found after filtering.');
+        return null;
+      }
+
+      // Check for negative response first (7F 09 xx)
+      const negativeMatch = cleanMessage.match(/7F09([0-9A-F]{2})/);
+      if (negativeMatch) {
+        log.warn(`[VINRetriever] Received negative response 7F 09 ${negativeMatch[1]} for VIN request.`);
+        return null;
+      }
+
+      // Look for VIN in standard positive response format (49 02 ...)
+      // This pattern tries to find 4902 followed by potential frame indicators and then the VIN hex (17 pairs = 34 chars)
+      const positiveResponseMatch = cleanMessage.match(/4902(?:[0-9A-F]{2})*?([0-9A-F]{34})/);
+
+      if (positiveResponseMatch) {
+        const vinHex = positiveResponseMatch[1];
+        log.debug('[VINRetriever] Found potential VIN hex:', vinHex);
+        const vin = this.hexToAscii(vinHex);
+        if (this.isValidVIN(vin)) {
+          log.info('[VINRetriever] Parsed VIN:', vin);
+          return vin;
+        } else {
+          log.warn('[VINRetriever] Extracted data does not form a valid VIN:', { vin, hex: vinHex });
+        }
+      } else {
+        log.warn('[VINRetriever] No standard positive VIN response (4902 + 17 hex pairs) found in cleaned message.');
+      }
+
+      // If no VIN found after processing
       return null;
     } catch (error) {
       log.error('[VINRetriever] Error processing VIN response:', error);
@@ -180,27 +193,39 @@ export class VINRetriever {
       // Initialize device
       const initialized = await this.initializeDevice();
       if (!initialized) {
-        log.error('[VINRetriever] Failed to initialize device');
+        log.error('[VINRetriever] Failed to initialize device for VIN retrieval'); // Corrected log message
         return null;
       }
-
+  
       // Request VIN
+      log.debug('[VINRetriever] Sending VIN request (0902)...');
       const response = await this.bluetoothSendCommandRawChunked('0902');
-      if (!response?.chunks) {
-        log.error('[VINRetriever] No response from ECU');
+      console.log('Response:', response); // Keep this for debugging
+      if (!response?.chunks || response.chunks.length === 0) { // Check for empty chunks array
+        log.error('[VINRetriever] No response or empty chunks received from ECU for 0902'); // Corrected log message
         return null;
       }
-
-      log.debug('[VINRetriever] Raw response chunks:', response.chunks.map(c => this.bytesToHex(c)));
-
+  
+      log.debug('[VINRetriever] Raw response chunks received:', response.chunks.length);
+      // Log the content of each chunk for detailed debugging
+      response.chunks.forEach((chunk, index) => {
+        // Handle potential non-Uint8Array chunks if necessary
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(Object.values(chunk));
+        log.debug(`[VINRetriever] Chunk ${index}:`, {
+          hex: this.bytesToHex(bytes),
+          ascii: String.fromCharCode(...bytes).replace(/[\x00-\x1F\x7F-\xFF]/g, '.') // Replace non-printable chars
+        });
+      });
+  
+  
       // Process VIN response
       const vin = this.processVINResponse(response.chunks);
       if (vin) {
         log.info('[VINRetriever] Successfully retrieved VIN:', vin);
         return vin;
       }
-
-      log.warn('[VINRetriever] Failed to extract valid VIN from response');
+  
+      log.warn('[VINRetriever] Failed to extract valid VIN from response after processing.'); // Corrected log message
       return null;
     } catch (error) {
       log.error('[VINRetriever] Error retrieving VIN:', error);
