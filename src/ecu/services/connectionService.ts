@@ -565,7 +565,9 @@ export const getVehicleVIN = async (
   try {
     await log.info('[ConnectionService] Attempting to retrieve VIN...');
     // Add log before calling the retriever
-    await log.debug('[ConnectionService] Instantiating and calling VINRetriever...');
+    await log.debug(
+      '[ConnectionService] Instantiating and calling VINRetriever...',
+    );
     // Pass the renamed function to the VINRetriever constructor
     const vinRetriever = new VINRetriever(sendCommand, sendCommandRaw);
     const vin = await vinRetriever.retrieveVIN(); // This is where the core logic (and potential failure) happens
@@ -574,7 +576,9 @@ export const getVehicleVIN = async (
       await log.info(`[ConnectionService] VIN retrieved successfully: ${vin}`);
     } else {
       // This log indicates VINRetriever returned null, likely due to ECU response or parsing failure
-      await log.warn('[ConnectionService] Failed to retrieve VIN (VINRetriever returned null).');
+      await log.warn(
+        '[ConnectionService] Failed to retrieve VIN (VINRetriever returned null).',
+      );
     }
 
     return vin;
