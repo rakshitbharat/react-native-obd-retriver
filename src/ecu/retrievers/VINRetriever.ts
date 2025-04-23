@@ -186,7 +186,7 @@ export class VINRetriever {
         result.error = `Negative Response (Mode Echo: ${modeEcho}, NRC: ${nrc})`;
         // Add specific log for NRC
         log.warn(
-          `[VINRetriever] Received Negative Response. Mode Echo: ${modeEcho}, NRC: ${nrc}`,
+          `[VINRetriever] Received Negative Response (7F). Mode Echo: ${modeEcho}, NRC: ${nrc}`,
         );
       } else result.error = `General Error (${basicCleaned})`;
     }
@@ -194,6 +194,21 @@ export class VINRetriever {
     else if (basicCleaned === '' || basicCleaned === RESPONSE_KEYWORDS.PROMPT) {
       result.error = 'Empty response';
     }
+    // Additional check for potential non-7F Negative Responses, specifically NRC 31
+    // Example: UF 01 31 or similar patterns where the 3rd byte is 31
+    // This assumes a structure like [Header?] [Mode Echo] [PID Echo] [NRC]
+    // Check if cleanHex has at least 6 chars and the 5th/6th chars are '31'
+    // And ensure it doesn't start with '4902' (positive response)
+    else if (result.cleanHex.length >= 6 && result.cleanHex.substring(4, 6) === '31' && !result.cleanHex.includes('4902')) {
+        const potentialModeEcho = result.cleanHex.substring(0, 2); // Might not be standard echo
+        const potentialPidEcho = result.cleanHex.substring(2, 4); // Might not be standard echo
+        const nrc = '31';
+        result.error = `Potential Negative Response (NRC: ${nrc})`;
+        log.warn(
+          `[VINRetriever] Received Potential Negative Response (NRC: ${nrc}). Pattern: ${potentialModeEcho} ${potentialPidEcho} ${nrc}. Full Hex: ${result.cleanHex}`,
+        );
+    }
+
 
     log.debug('[VINRetriever] checkResponseForErrors result:', {
       error: result.error,
@@ -276,11 +291,20 @@ export class VINRetriever {
           // Retry the VIN command using sendCommandRaw
           const retryResponse: ChunkedResponse | null =
             await this.sendCommandRaw('0902', { timeout: 15000 }); // Use options object
-          // Check if retryResponse is not null before accessing rawResponse
-          // Pass rawResponse (byte arrays) to checkResponseForErrors
-          const { error: retryError } = this.checkResponseForErrors(
+
+          // Check the response and log the result for this specific config attempt
+          const { error: retryError, rawString: retryRawString } = this.checkResponseForErrors(
             retryResponse?.rawResponse,
           );
+
+          // Log the outcome of this specific FC attempt
+          log.debug(`[VINRetriever] FC Retry Attempt Result (${config.desc})`, {
+              error: retryError,
+              // Log the raw string (cleaned for readability) if available
+              rawString: retryRawString ? retryRawString.replace(/[^\x20-\x7E]/g, '.') : 'N/A',
+              responseReceived: !!retryResponse,
+          });
+
 
           if (retryResponse && !retryError) {
             log.info(
@@ -288,10 +312,6 @@ export class VINRetriever {
             );
             successfulResponse = retryResponse; // Store successful response
             break; // Exit inner loop (configs)
-          } else {
-            log.debug(
-              `[VINRetriever] Flow control config (${config.desc}) did not yield valid response on retry. Error: ${retryError ?? 'Unknown'}`,
-            );
           }
         } catch (error) {
           log.warn(
@@ -625,32 +645,44 @@ export class VINRetriever {
       }
 
       // Check initial response for errors using rawResponse
-      const { error: initialError } = this.checkResponseForErrors(
+      log.debug('[VINRetriever] About to check initial response for errors...');
+      const { error: initialError, rawString: initialRawStringChecked } = this.checkResponseForErrors(
         response?.rawResponse,
-      ); // Pass rawResponse
-      log.debug('[VINRetriever] Initial response check result:', {
-        initialError,
+      );
+      log.debug('[VINRetriever] Initial response check completed.', {
+        initialError: initialError,
+        initialRawStringChecked: initialRawStringChecked ? initialRawStringChecked.replace(/[^\x20-\x7E]/g, '.') : 'N/A',
       });
+
 
       // If initial response had errors potentially related to flow control, attempt retry
       if (initialError) {
+        log.debug('[VINRetriever] Initial error detected. Checking if retryable...');
         log.warn(
           `[VINRetriever] Initial 0902 request failed or returned error: ${initialError}.`,
         );
         // Determine if FC retry is warranted based on the error type
-        // Errors like Timeout, Buffer Full, Negative Response (e.g., NRC 31 - Request out of range, sometimes related to timing/FC)
         const retryFCErrors = [
           'Timeout',
           'Buffer Full',
           'Negative Response (NRC: 31)',
           'Negative Response (NRC: 22)',
-        ]; // NRC 22 = Conditions not correct
-        const isRetryableError = retryFCErrors.some(e =>
-          initialError.includes(e),
-        );
+          'Potential Negative Response (NRC: 31)',
+        ];
+        // Add detailed logging inside the .some() callback
+        const isRetryableError = retryFCErrors.some(e => {
+          const includesResult = initialError.includes(e);
+          log.debug('[VINRetriever] Comparing error strings for retry:', { // <-- Add detailed log here
+            initialError: `"${initialError}"`, // Enclose in quotes for clarity
+            retryErrorString: `"${e}"`,       // Enclose in quotes for clarity
+            includesResult,
+          });
+          return includesResult;
+        });
+        log.debug('[VINRetriever] Retryable check completed.', { isRetryableError });
 
         if (isRetryableError) {
-          log.debug(
+          log.debug( // This log should appear if retry is triggered
             '[VINRetriever] Triggering Flow Control retry due to error:',
             initialError,
           );
@@ -662,6 +694,16 @@ export class VINRetriever {
             );
             return null; // FC retry also failed
           }
+           // Check the response *after* retry for errors again using rawResponse
+          const { error: retryError } = this.checkResponseForErrors(response?.rawResponse); // Pass rawResponse
+           if(retryError){
+               log.error(`[VINRetriever] Flow control retry response still contained an error: ${retryError}`);
+               return null;
+           }
+           // Add log if retry response seems OK
+           else {
+                log.info('[VINRetriever] Flow control retry response appears valid, proceeding to process.');
+           }
         } else {
           log.warn(
             '[VINRetriever] Skipping Flow Control retry because error is considered definitive:',
@@ -669,6 +711,8 @@ export class VINRetriever {
           );
           return null; // Initial definitive failure
         }
+      } else {
+         log.debug('[VINRetriever] No initial error detected. Proceeding to process response.');
       }
 
       // If we have a response (either initial or after FC retry)
