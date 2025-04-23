@@ -137,6 +137,8 @@ export class VINRetriever {
         const modeEcho = result.cleanHex.substring(2, 4); // 7F[XX]yy
         const nrc = result.cleanHex.substring(4, 6);      // 7Fxx[YY]
         result.error = `Negative Response (Mode Echo: ${modeEcho}, NRC: ${nrc})`;
+        // Add specific log for NRC
+        log.warn(`[VINRetriever] Received Negative Response. Mode Echo: ${modeEcho}, NRC: ${nrc}`);
       }
       else result.error = `General Error (${basicCleaned})`;
     }
@@ -221,6 +223,8 @@ export class VINRetriever {
 
     if (!successfulResponse) {
         log.warn('[VINRetriever] Could not retrieve VIN after trying all Flow Control configurations.');
+    } else {
+        log.info('[VINRetriever] Flow Control retry attempt yielded a response.'); // Log success
     }
     return successfulResponse; // Return the successful response or null
   }
@@ -430,11 +434,11 @@ export class VINRetriever {
         log.warn('[VINRetriever] No initial chunks received for 0902.');
         // If no response at all, trigger FC retry? Or just fail? Let's try FC.
         response = await this.tryFlowControlAndRetryVIN();
+        // Add log here to indicate outcome of retry
         if (!response) {
             log.error('[VINRetriever] VIN retrieval failed: No response even after Flow Control adjustments.');
             return null;
         }
-        log.info('[VINRetriever] Flow Control retry attempt yielded a response.');
       }
 
       // Check initial response for errors
@@ -452,18 +456,11 @@ export class VINRetriever {
         if (isRetryableError) {
           log.debug('[VINRetriever] Triggering Flow Control retry due to error:', initialError);
           response = await this.tryFlowControlAndRetryVIN(); // tryFlowControlAndRetryVIN returns Promise<ChunkedResponse | null>
+          // Add log here to indicate outcome of retry
           if (!response) {
             log.error('[VINRetriever] VIN retrieval failed even after Flow Control adjustments.');
             return null; // FC retry also failed
           }
-          log.info('[VINRetriever] Flow Control retry yielded a valid response.');
-           // Check the response *after* retry for errors again
-          const { error: retryError } = this.checkResponseForErrors(response?.chunks);
-           if(retryError){
-               log.error(`[VINRetriever] Flow control retry response still contained an error: ${retryError}`);
-               return null;
-           }
-
         } else {
           log.warn('[VINRetriever] Skipping Flow Control retry because error is considered definitive:', initialError);
           return null; // Initial definitive failure
