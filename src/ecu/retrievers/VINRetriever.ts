@@ -3,6 +3,7 @@ import { RESPONSE_KEYWORDS, PROTOCOL } from '../utils/constants';
 import { isResponseError } from '../utils/helpers';
 import { hexToBytes, bytesToHex, bytesToString } from '../utils/ecuUtils';
 import { ecuStore, getStore } from '../context/ECUStore';
+import { VinDecoder } from 'obd-raw-data-parser';
 import type {
   SendCommandFunction,
   SendCommandRawFunction,
@@ -786,39 +787,33 @@ export class VINRetriever {
 
       log.debug(`[VINRetrieverLIB] Processing Hex: ${fullHexString}`);
 
-      // Search for the positive response code '4902'
-      const vinResponseMarker = '4902';
-      const markerIndex = fullHexString.indexOf(vinResponseMarker);
-
-      if (markerIndex === -1) {
-        log.warn(
-          `[VINRetrieverLIB] Positive response marker '${vinResponseMarker}' not found in hex: ${fullHexString}`,
-        );
-        // Check for the echo '0902' which might indicate command echo instead of response
-        if (fullHexString.includes('0902')) {
-            log.warn(`[VINRetrieverLIB] Found command echo '0902' instead of VIN data.`);
+      // First try to process as a segmented response (more common format)
+      try {
+        const formattedSegmented = fullHexString
+          .replace(/\s+/g, '') // Remove any whitespace
+          .replace(/>/g, ''); // Remove prompt character
+        const vin = VinDecoder.processVINResponse(formattedSegmented);
+        if (vin && this.isValidVIN(vin)) {
+          log.debug(`[VINRetrieverLIB] Successfully decoded segmented VIN: ${vin}`);
+          return vin;
         }
-        return null;
+      } catch (segmentError) {
+        log.debug('[VINRetrieverLIB] Not a valid segmented VIN response, trying non-segmented format');
       }
 
-      // Extract the hex data following the marker
-      // The marker itself is 4 chars long. The next 2 chars (e.g., '01') are part of the ISO-TP header/metadata.
-      // VIN data starts after these next 2 chars.
-      const vinHexDataStartIndex = markerIndex + vinResponseMarker.length + 2;
-      const vinHexData = fullHexString.substring(vinHexDataStartIndex);
-
-      if (!vinHexData) {
-        log.warn('[VINRetrieverLIB] No VIN hex data found after marker.');
-        return null;
+      // If segmented processing fails, try non-segmented format
+      try {
+        const vin = VinDecoder.processVINSegments(fullHexString);
+        if (vin && this.isValidVIN(vin)) {
+          log.debug(`[VINRetrieverLIB] Successfully decoded non-segmented VIN: ${vin}`);
+          return vin;
+        }
+      } catch (nonSegmentError) {
+        log.debug('[VINRetrieverLIB] Not a valid non-segmented VIN response');
       }
 
-      log.debug(`[VINRetrieverLIB] Extracted VIN Hex: ${vinHexData}`);
-
-      // Convert extracted hex to ASCII using ecuUtils functions
-      const vin = this.hexToAscii(vinHexData);
-      log.debug(`[VINRetrieverLIB] Converted to ASCII: ${vin}`);
-
-      return this.isValidVIN(vin) ? vin : null;
+      log.warn('[VINRetrieverLIB] Could not decode VIN from response:', fullHexString);
+      return null;
     } catch (error) {
       log.error('[VINRetrieverLIB] Error processing VIN response:', error);
       return null;
