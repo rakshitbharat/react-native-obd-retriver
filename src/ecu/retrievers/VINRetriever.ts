@@ -316,9 +316,10 @@ export class VINRetriever {
 
     // Special case for protocol setting commands (ATSPX)
     if (upperCommand.startsWith('ATSP')) {
-      // Accept OK or the echo ATSPx62 (or similar)
+      // Accept OK or the echo ATSPx62 (or similar) or a valid data response like 41 00...
       const isSpOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
-                     cleanNoSpace.includes(upperCommand); // Check if echo is present
+                     cleanNoSpace.includes(upperCommand) || // Check if echo is present
+                     upperResponse.startsWith('41'); // Check for valid data response
       if (isSpOk) {
         log.debug(`[VINRetrieverLIB] Valid ATSP response: ${trimmedResponse}`);
         return true;
@@ -343,6 +344,28 @@ export class VINRetriever {
                      cleanNoSpace.includes(upperCommand); // Check if echo is present
       if (isStOk) {
         log.debug(`[VINRetrieverLIB] Valid ATST response: ${trimmedResponse}`);
+        return true;
+      }
+    }
+
+    // Special case for ATSHxxx commands
+    if (upperCommand.startsWith('ATSH')) {
+      // Accept OK or the echo ATSHxxx62 (or similar)
+      const isShOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                     cleanNoSpace.includes(upperCommand); // Check if echo is present
+      if (isShOk) {
+        log.debug(`[VINRetrieverLIB] Valid ATSH response: ${trimmedResponse}`);
+        return true;
+      }
+    }
+
+    // Special case for ATATx commands
+    if (upperCommand.startsWith('ATAT')) {
+      // Accept OK or the echo ATATx62 (or similar)
+      const isAtOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                     cleanNoSpace.includes(upperCommand); // Check if echo is present
+      if (isAtOk) {
+        log.debug(`[VINRetrieverLIB] Valid ATAT response: ${trimmedResponse}`);
         return true;
       }
     }
@@ -569,7 +592,8 @@ export class VINRetriever {
       }
 
       // 8. Set Header (using selected address or default from config) - Fail fast
-      const headerToSet = state.selectedEcuAddress || config.functionalHeader;
+      // Use the functional header from the config as the default for the VIN request
+      const headerToSet = config.functionalHeader;
       const headerCmd = `ATSH${headerToSet}`;
       log.debug(`[VINRetrieverLIB] Setting header: ${headerCmd}`);
       const shResponse = await this.sendCommand(headerCmd);
