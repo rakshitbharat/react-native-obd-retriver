@@ -70,6 +70,7 @@
     "react-native-permissions": ">=3.0.0"
   },
   "dependencies": {
+    "obd-raw-data-parser": "^1.0.25",
     "react-native-beautiful-logs": "^1.0.8",
     "react-native-ble-manager": ">=10.1.3",
     "react-native-bluetooth-obd-manager": "^1.0.3",
