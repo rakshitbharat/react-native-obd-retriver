@@ -241,7 +241,7 @@ export class ProtocolManager {
       await log.debug('[ProtocolManager] Trying ATSP0 (Auto)...');
       // Set initial timing configuration for auto protocol
       await this.setInitialTimingAndProtocol(PROTOCOL.AUTO);
-      
+
       const autoSetResponse = await this.sendCommand(
         ELM_COMMANDS.AUTO_PROTOCOL,
       );
@@ -264,10 +264,12 @@ export class ProtocolManager {
           upper.includes('BUS')
         ) {
           // Double the delay for auto protocol
-          await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2); 
+          await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2);
 
           // Additional initialization for auto protocol
-          await this.sendCommand('ATH1');          await this.sendCommand('ATCAF1');          await this.delay(DELAYS_MS.COMMAND_MEDIUM);
+          await this.sendCommand('ATH1');
+          await this.sendCommand('ATCAF1');
+          await this.delay(DELAYS_MS.COMMAND_MEDIUM);
 
           const verifyResponse = await this.sendProtocolTestCommand(4);
           if (verifyResponse) {
@@ -284,10 +286,9 @@ export class ProtocolManager {
           }
         }
       }
-      
+
       // Reset protocol if auto failed
       await this.resetProtocol();
-      
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ProtocolManager] Error during Auto protocol attempt:', {
@@ -327,12 +328,18 @@ export class ProtocolManager {
             await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
 
             // Configure CAN settings if applicable
-            if (protocol >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K && protocol <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8) {
+            if (
+              protocol >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K &&
+              protocol <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8
+            ) {
               await this.sendCommand('ATCAF1');
               await this.delay(DELAYS_MS.COMMAND_SHORT);
-              
+
               // Set appropriate CAN headers based on protocol
-              if (protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_500K || protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_250K) {
+              if (
+                protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_500K ||
+                protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_250K
+              ) {
                 await this.sendCommand('ATSH7DF'); // Standard 11-bit broadcast ID
               } else {
                 await this.sendCommand('ATSH18DB33F1'); // Extended 29-bit broadcast ID
@@ -498,7 +505,7 @@ export class ProtocolManager {
 
   private isResponseError(response: string): boolean {
     if (!response) return true;
-    
+
     // Common error patterns found in both old and new implementations
     const errorPatterns = [
       'ERROR',
@@ -510,20 +517,21 @@ export class ProtocolManager {
       'BUS INIT: ERROR',
       'DATA ERROR',
       'STOPPED',
-      '?'
+      '?',
     ];
-    
+
     const upper = response.toUpperCase();
-    return errorPatterns.some(pattern =>
-      upper.includes(pattern)
-    ) || upper === '010062'; // Special case: bare command echo with 62 suffix is considered an error
+    return (
+      errorPatterns.some(pattern => upper.includes(pattern)) ||
+      upper === '010062'
+    ); // Special case: bare command echo with 62 suffix is considered an error
   }
 
   private async setInitialTimingAndProtocol(protocol: PROTOCOL): Promise<void> {
     // Set timeout to 4*62ms (~250ms) which is more reliable for initialization
     await this.sendCommand('ATST62');
     await this.delay(DELAYS_MS.COMMAND_SHORT);
-    
+
     // Set response timeout multiplier for slow ECUs (00 = no timeout)
     await this.sendCommand('ATAT0');
     await this.delay(DELAYS_MS.COMMAND_SHORT);
@@ -538,11 +546,11 @@ export class ProtocolManager {
     // Close any active protocol first
     await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
     await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
-    
+
     // Reset adapter
     await this.sendCommand('ATZ');
     await this.delay(DELAYS_MS.RESET);
-    
+
     // Base configuration
     await this.sendCommand('ATE0'); // Echo off
     await this.sendCommand('ATL0'); // Line feeds off

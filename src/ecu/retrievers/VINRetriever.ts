@@ -1,17 +1,79 @@
 import { log } from '../../utils/logger';
 import { getStore } from '../context/ECUStore';
-import { VinDecoder } from 'obd-raw-data-parser';
 import { processVINResponse } from '../utils/responseHandler';
-import { VIN_CONSTANTS } from './vinConstants';
+import { DELAYS_MS, RESPONSE_KEYWORDS } from '../utils/constants';
 import type { SendCommandFunction, SendCommandRawFunction } from './types';
 
+// Constants for VIN retrieval
+const VIN_CONSTANTS = {
+  HEADERS: {
+    CAN_11BIT: '7DF',
+    CAN_29BIT: '18DB33F1',
+  },
+  FLOW_CONTROL: {
+    CAN_11BIT: {
+      SEND_ID: '7E0',
+      RECEIVE_ID: '7E8',
+      FLOW_ID: '7E0',
+    },
+    CAN_29BIT: {
+      SEND_ID: '18DA10F1',
+      RECEIVE_ID: '18DAF110',
+      FLOW_ID: '18DA10F1',
+    },
+  },
+  DELAYS: {
+    INIT: 300,
+    FLOW_CONTROL: 100,
+    RETRY: 2000,
+  },
+  INIT_COMMANDS: [
+    { cmd: 'ATZ', delay: 1000 },
+    { cmd: 'ATE0', delay: 100 },
+    { cmd: 'ATL0', delay: 100 },
+    { cmd: 'ATH1', delay: 100 },
+    { cmd: 'ATCAF1', delay: 100 },
+  ],
+};
+
+function decodeVINResponse(vinHex: string): string | null {
+  try {
+    // Remove any whitespace and '>' prompts
+    const cleanHex = vinHex.replace(/\s+|>/g, '').toUpperCase();
+
+    // Remove service mode and PID bytes if present (4902)
+    const dataHex = cleanHex.replace(/^4902/, '');
+
+    // Convert hex pairs to ASCII, filtering non-printable characters
+    const chars: string[] = [];
+    for (let i = 0; i < dataHex.length; i += 2) {
+      const hex = dataHex.substring(i, i + 2);
+      const charCode = parseInt(hex, 16);
+      // Only allow printable ASCII characters (32-126)
+      if (charCode >= 32 && charCode <= 126) {
+        chars.push(String.fromCharCode(charCode));
+      }
+    }
+
+    const vin = chars.join('').trim();
+    return /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin) ? vin : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 export class VINRetriever {
-  private sendCommand: SendCommandFunction;
-  private currentFunctionalHeader: string | null = null;
+  private readonly sendCommand: SendCommandFunction;
+  private maxRetries = 3;
+  private retryDelay = 2000;
+  private currentFlowConfig: {
+    sendId: string;
+    receiveId: string;
+    flowId: string;
+  } | null = null;
 
   constructor(
     sendCommand: SendCommandFunction,
-    // sendCommandRaw is required by interface but not used in this implementation
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     sendCommandRaw: SendCommandRawFunction,
   ) {
@@ -19,104 +81,154 @@ export class VINRetriever {
   }
 
   private async delay(ms: number): Promise<void> {
-    const finalDelay = Math.max(ms, 50); // Ensure minimum delay
-    await new Promise(resolve => setTimeout(resolve, finalDelay));
+    await new Promise(resolve => setTimeout(resolve, Math.max(ms, 50)));
+  }
+
+  private async configureFlowControl(isExtended: boolean): Promise<void> {
+    const config = isExtended
+      ? VIN_CONSTANTS.FLOW_CONTROL.CAN_29BIT
+      : VIN_CONSTANTS.FLOW_CONTROL.CAN_11BIT;
+
+    this.currentFlowConfig = {
+      sendId: config.SEND_ID,
+      receiveId: config.RECEIVE_ID,
+      flowId: config.FLOW_ID,
+    };
+
+    // Set flow control
+    await this.sendCommand(`ATFCSH${config.FLOW_ID}`);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand('ATFCSD300000');
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand('ATFCSM1');
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
   }
 
   private async setHeader(header: string): Promise<boolean> {
-    const cmd = `ATSH${header}`;
-    const response = await this.sendCommand(cmd);
+    const response = await this.sendCommand(`ATSH${header}`);
     if (!response || response.includes('?') || response.includes('ERROR')) {
-      log.warn(`[VINRetriever] Failed to set header ${header}`);
+      await log.warn(`[VINRetriever] Failed to set header ${header}`);
       return false;
     }
-    this.currentFunctionalHeader = header;
     return true;
   }
 
-  private async setFlowControlParams(config: {
-    fcsh: string;
-    fcsd: string;
-    fcsm: string;
-  }): Promise<boolean> {
-    // Set flow control parameters with proper delays
-    await this.sendCommand(`ATFCSH${config.fcsh}`);
-    await this.delay(VIN_CONSTANTS.DELAYS.FLOW_CONTROL);
-    await this.sendCommand(`ATFCSD${config.fcsd}`);
-    await this.delay(VIN_CONSTANTS.DELAYS.FLOW_CONTROL);
-    await this.sendCommand(`ATFCSM${config.fcsm}`);
-    await this.delay(VIN_CONSTANTS.DELAYS.FLOW_CONTROL);
-    return true;
+  private async initializeAdapter(): Promise<void> {
+    // Reset and initialize
+    for (const { cmd, delay } of VIN_CONSTANTS.INIT_COMMANDS) {
+      await this.sendCommand(cmd);
+      await this.delay(delay);
+    }
   }
 
   private async sendVINRequest(): Promise<string | null> {
-    const response = await this.sendCommand('0902');
-    if (!response) return null;
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      await log.debug(
+        `[VINRetriever] VIN Request Attempt ${attempt}/${this.maxRetries}`,
+      );
 
-    // Use the new response handler
-    return processVINResponse(response);
+      try {
+        let response = await this.sendCommand('0902');
+
+        // Handle initial response patterns
+        if (!response) {
+          await this.delay(this.retryDelay);
+          continue;
+        }
+
+        // Clean the response
+        response = response.replace(/\r|\n|>|\s/g, '').toUpperCase();
+
+        // Check for error conditions
+        if (
+          response.includes('NO DATA') ||
+          response.includes('ERROR') ||
+          response.includes('UNABLE') ||
+          response.includes('?')
+        ) {
+          await log.debug(
+            '[VINRetriever] Error response received, retrying...',
+          );
+          await this.delay(this.retryDelay);
+          continue;
+        }
+
+        // Handle multi-frame responses
+        if (response.includes('SEARCHING') || response.endsWith('62')) {
+          await this.delay(500); // Wait for potential multi-frame message
+          response = await this.sendCommand('');
+        }
+
+        // Process response
+        const processedResponse = processVINResponse(response);
+        if (processedResponse) {
+          return processedResponse;
+        }
+
+        await this.delay(this.retryDelay);
+      } catch (error) {
+        await log.error(`[VINRetriever] Error in attempt ${attempt}:`, error);
+        await this.delay(this.retryDelay);
+      }
+    }
+
+    await log.warn('[VINRetriever] Failed to get VIN after all retries');
+    return null;
   }
 
   public async retrieveVIN(): Promise<string | null> {
     try {
       const state = getStore();
       if (!state.activeProtocol || state.status !== 'CONNECTED') {
-        log.error('[VINRetriever] Not connected or no protocol active');
+        await log.error('[VINRetriever] Not connected or no protocol active');
         return null;
       }
 
-      // Initialize with basic settings
-      for (const { cmd } of VIN_CONSTANTS.INIT_COMMANDS) {
-        await this.sendCommand(cmd);
-        await this.delay(VIN_CONSTANTS.DELAYS.STANDARD);
-      }
+      // Initialize adapter
+      await this.initializeAdapter();
 
       // Set protocol explicitly
       await this.sendCommand(`ATSP${state.activeProtocol}`);
-      await this.delay(200);
+      await this.delay(500);
 
-      // Try standard 11-bit CAN first
-      await this.setHeader(VIN_CONSTANTS.HEADERS.CAN_11BIT);
-      let vinResponse = await this.sendVINRequest();
+      // Try CAN protocols in order: 11-bit, then 29-bit if needed
+      const protocols = [
+        { header: VIN_CONSTANTS.HEADERS.CAN_11BIT, isExtended: false },
+        { header: VIN_CONSTANTS.HEADERS.CAN_29BIT, isExtended: true },
+      ];
 
-      if (!vinResponse) {
-        // Try 29-bit CAN
-        await this.setHeader(VIN_CONSTANTS.HEADERS.CAN_29BIT);
-        vinResponse = await this.sendVINRequest();
-      }
+      for (const { header, isExtended } of protocols) {
+        // Configure flow control first
+        await this.configureFlowControl(isExtended);
 
-      if (!vinResponse) {
-        // Try with flow control
-        const flowConfigs = VIN_CONSTANTS.FLOW_CONTROL_CONFIGS;
-
-        for (const config of flowConfigs) {
-          await this.setFlowControlParams(config);
-          vinResponse = await this.sendVINRequest();
-          if (vinResponse) break;
-          await this.delay(200);
-        }
-      }
-
-      if (vinResponse) {
-        try {
-          // Try both segmented and non-segmented VIN decoding
-          const vinHex = vinResponse.replace(/\s+/g, '').replace(/>/g, '');
-          let vin = VinDecoder.processVINResponse(vinHex);
-          if (!vin) {
-            vin = VinDecoder.processVINSegments(vinHex);
+        // Set header
+        if (await this.setHeader(header)) {
+          const vinResponse = await this.sendVINRequest();
+          if (vinResponse) {
+            try {
+              const vin = decodeVINResponse(vinResponse);
+              if (vin) {
+                await log.info(
+                  `[VINRetriever] Successfully retrieved VIN: ${vin}`,
+                );
+                return vin;
+              }
+            } catch (e) {
+              await log.error('[VINRetriever] Error decoding VIN response:', e);
+            }
           }
-          if (vin && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
-            log.info(`[VINRetriever] Successfully retrieved VIN: ${vin}`);
-            return vin;
-          }
-        } catch (e) {
-          log.error('[VINRetriever] Error decoding VIN response:', e);
         }
+
+        // Small delay before trying next protocol
+        await this.delay(300);
       }
 
+      await log.warn(
+        '[VINRetriever] Failed to retrieve valid VIN with any protocol configuration',
+      );
       return null;
     } catch (error) {
-      log.error('[VINRetriever] Error retrieving VIN:', error);
+      await log.error('[VINRetriever] Error retrieving VIN:', error);
       return null;
     }
   }
