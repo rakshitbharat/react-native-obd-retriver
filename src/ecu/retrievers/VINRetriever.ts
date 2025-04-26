@@ -24,13 +24,14 @@ const VIN_CONSTANTS: VINConstants = {
     PROTOCOL: 200,
     ADAPTIVE_BASE: 80,
     ST_TIMEOUT: 100, // Add timeout adjustment delay
+    FC_SETUP: 75, // Added delay for flow control setup steps
   },
   INIT_SEQUENCE_PRE_PROTOCOL: [
     { cmd: 'ATE0', delay: 100 },
     { cmd: 'ATL0', delay: 100 },
     { cmd: 'ATS0', delay: 100 },
     { cmd: 'ATH1', delay: 100 },
-    { cmd: 'ATCAF1', delay: 100 },
+    { cmd: 'ATCAF0', delay: 100 }, // Changed ATCAF1 to ATCAF0
     { cmd: 'ATST64', delay: 100 },
   ],
   INIT_SEQUENCE_POST_PROTOCOL: [],
@@ -43,8 +44,8 @@ const VIN_CONSTANTS: VINConstants = {
       canType: '11bit',
       adaptiveTimingMode: 2,
       commands: [
-        { cmd: 'ATCRA7E8', delay: 100 },
-        { cmd: 'ATCF7E8', delay: 100 },
+        // REMOVED: { cmd: 'ATCRA7E8', delay: 100 },
+        // REMOVED: { cmd: 'ATCF7E8', delay: 100 },
       ],
     },
     {
@@ -55,8 +56,8 @@ const VIN_CONSTANTS: VINConstants = {
       canType: '29bit',
       adaptiveTimingMode: 2,
       commands: [
-        { cmd: 'ATCRA18DAF110', delay: 100 },
-        { cmd: 'ATCF18DAF110', delay: 100 },
+        // REMOVED: { cmd: 'ATCRA18DAF110', delay: 100 },
+        // REMOVED: { cmd: 'ATCF18DAF110', delay: 100 },
       ],
     },
   ],
@@ -83,7 +84,7 @@ export class VINRetriever {
   private sendCommandRaw: SendCommandRawFunction;
   private currentAdaptiveDelay: number;
   private currentATMode: 0 | 1 | 2;
-  private currentFunctionalHeader: string | null = null;
+  private currentFunctionalHeader: string | null = null; // Ensure this is initialized
   // Update type definitions to be explicit about null
   private currentProtocol: PROTOCOL | null = null;
   private selectedEcuAddress: string | null = null;
@@ -304,22 +305,44 @@ export class VINRetriever {
     const trimmedResponse = response.replace(/>/g, '').trim();
     // Uppercase for keyword checks
     const upperResponse = trimmedResponse.toUpperCase();
+    // Clean response without spaces for specific checks
+    const cleanNoSpace = upperResponse.replace(/\s/g, '');
+    // Uppercase command for checks
+    const upperCommand = command.toUpperCase();
 
     log.debug(
-      `[VINRetrieverLIB] isValidCommandResponse: Evaluating trimmed response: "${trimmedResponse}" (Original: "${response}")`,
+      `[VINRetrieverLIB] isValidCommandResponse: Evaluating trimmed response: "${trimmedResponse}" (Original: "${response}") for command "${command}"`,
     );
 
     // Special case for protocol setting commands (ATSPX)
-    if (command.startsWith('ATSP')) {
-      // Valid protocol responses can be:
-      // 1. OK response
-      // 2. Protocol number echo
-      // 3. Valid ECU response starting with 41
-      const isProtocolOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
-                          upperResponse === command.slice(-1) ||
-                          upperResponse.startsWith('41');
-      if (isProtocolOk) {
-        log.debug(`[VINRetrieverLIB] Valid protocol response: ${trimmedResponse}`);
+    if (upperCommand.startsWith('ATSP')) {
+      // Accept OK or the echo ATSPx62 (or similar)
+      const isSpOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                     cleanNoSpace.includes(upperCommand); // Check if echo is present
+      if (isSpOk) {
+        log.debug(`[VINRetrieverLIB] Valid ATSP response: ${trimmedResponse}`);
+        return true;
+      }
+    }
+
+    // Special case for ATCAF0
+    if (upperCommand === 'ATCAF0') {
+      // Accept OK or the echo ATCAF062 (or similar)
+      const isCafOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                      cleanNoSpace.includes(upperCommand); // Check if echo is present
+      if (isCafOk) {
+        log.debug(`[VINRetrieverLIB] Valid ATCAF0 response: ${trimmedResponse}`);
+        return true;
+      }
+    }
+
+    // Special case for ATSTxx commands
+    if (upperCommand.startsWith('ATST')) {
+      // Accept OK or the echo ATSTxx62 (or similar)
+      const isStOk = upperResponse.includes(RESPONSE_KEYWORDS.OK) ||
+                     cleanNoSpace.includes(upperCommand); // Check if echo is present
+      if (isStOk) {
+        log.debug(`[VINRetrieverLIB] Valid ATST response: ${trimmedResponse}`);
         return true;
       }
     }
@@ -347,15 +370,19 @@ export class VINRetriever {
 
     // 3. Check for common success patterns
     const isOk = upperResponse.includes(RESPONSE_KEYWORDS.OK);
-    const endsWith62 = trimmedResponse.replace(/[^A-Z0-9]/gi, '').endsWith('62');
+    // Use cleanNoSpace for endsWith check to handle potential spaces before 62
+    const endsWith62 = cleanNoSpace.endsWith('62');
     const isElm = upperResponse.includes(RESPONSE_KEYWORDS.ELM_MODEL);
     const isEmptyAfterTrim = trimmedResponse === '';
     const startsWithValidEcu = upperResponse.startsWith('41'); // Valid ECU response
 
-    const isValid = isOk || endsWith62 || isElm || isEmptyAfterTrim || startsWithValidEcu;
+    // Check if the response is simply the command echoed back (common for some commands)
+    const isEcho = cleanNoSpace === upperCommand;
+
+    const isValid = isOk || endsWith62 || isElm || isEmptyAfterTrim || startsWithValidEcu || isEcho;
 
     log.debug(
-      `[VINRetrieverLIB] isValidCommandResponse: Checks for "${trimmedResponse}": isOk=${isOk}, endsWith62=${endsWith62}, isElm=${isElm}, isEmpty=${isEmptyAfterTrim}, validEcu=${startsWithValidEcu}. Result: ${isValid}`,
+      `[VINRetrieverLIB] isValidCommandResponse: Checks for "${trimmedResponse}": isOk=${isOk}, endsWith62=${endsWith62}, isElm=${isElm}, isEmpty=${isEmptyAfterTrim}, validEcu=${startsWithValidEcu}, isEcho=${isEcho}. Result: ${isValid}`,
     );
 
     return isValid;
@@ -449,6 +476,7 @@ export class VINRetriever {
       const state = ecuStore.getState();
       // Add null check and type safety for address
       this.selectedEcuAddress = state.selectedEcuAddress || null;
+      this.currentFunctionalHeader = null; // Reset before initialization
 
       const currentProtocol = state.activeProtocol;
       if (currentProtocol === null) {
@@ -553,6 +581,9 @@ export class VINRetriever {
         );
         return false; // Fail fast
       }
+      // Store the successfully set header
+      this.currentFunctionalHeader = headerToSet;
+      log.info(`[VINRetrieverLIB] Header successfully set to: ${this.currentFunctionalHeader}`);
       await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
 
       // Add ST timeout adjustment before VIN request
@@ -564,10 +595,6 @@ export class VINRetriever {
       }
       await this.delay(VIN_CONSTANTS.DELAYS.ST_TIMEOUT);
 
-      // Add response format configuration
-      await this.sendCommand('ATFCSH7E0');
-      await this.delay(VIN_CONSTANTS.DELAYS.COMMAND);
-
       log.info(
         '[VINRetrieverLIB] Device initialization for VIN retrieval seems successful.',
       );
@@ -578,56 +605,61 @@ export class VINRetriever {
         error,
       );
       this.currentATMode = 0; // Ensure AT is off on error
+      this.currentFunctionalHeader = null; // Reset header on error
       return false;
     }
   }
 
   private async sendVINRequest(attempt = 1): Promise<ChunkedResponse | null> {
     try {
-      // Try first without flow control and with longer initial delay
-      await this.sendCommand('ATFCSM0');
-      await this.delay(500); // Increased initial delay
+      // Use the header already set during initializeDevice
+      const headerToUse = this.currentFunctionalHeader || 'Unknown'; // Get header set in init
+      log.debug(
+        `[VINRetrieverLIB] Sending initial VIN request with header: ${headerToUse}`,
+      );
 
-      // Try each header in sequence until we get a response
-      for (const header of VIN_CONSTANTS.ALTERNATE_HEADERS) {
-        log.debug(`[VINRetrieverLIB] Trying VIN request with header: ${header}`);
-        
-        // Set header and wait longer
-        await this.sendCommand(`ATSH${header}`);
-        await this.delay(200); // Increased delay after setting header
-        
-        // Send VIN request - fix options format
-        let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
-          raw: true,
-          // Remove timeout completely for VIN request
-        });
+      // Send VIN request - fix options format
+      let response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
+        raw: true,
+        // Remove timeout completely for VIN request
+      });
 
-        if (response?.rawResponse && response.rawResponse.length > 0) {
-          // Add check for NO DATA response
-          const validation = this.checkResponseForErrors(response.rawResponse);
-          if (!validation.error || !validation.error.includes('No Data')) {
-            log.debug(`[VINRetrieverLIB] Got response with header ${header}`);
-            return response;
-          }
+      if (response?.rawResponse && response.rawResponse.length > 0) {
+        const validation = this.checkResponseForErrors(response.rawResponse);
+        // Check for specific errors that mean we should stop, otherwise return the response
+        if (
+          !validation.error ||
+          !(
+            validation.error.includes('No Data') ||
+            validation.error.includes('Timeout') ||
+            validation.error.includes('Unable to Connect') ||
+            validation.error.includes('Negative Response')
+          )
+        ) {
+          log.debug(
+            `[VINRetrieverLIB] Got response with header ${headerToUse}`,
+          );
+          return response;
+        } else {
+          log.warn(
+            `[VINRetrieverLIB] Initial VIN request with header ${headerToUse} resulted in error: ${validation.error}`,
+          );
         }
-
-        // Increased delay between header attempts
-        await this.delay(300);
-      }
-
-      // If no response with any header, try flow control
-      if (this.currentProtocol) {
-        return await this.tryFlowControl(
-          this.currentProtocol,
-          this.selectedEcuAddress
+      } else {
+        log.warn(
+          `[VINRetrieverLIB] Initial VIN request with header ${headerToUse} yielded no response.`,
         );
       }
 
+      // If the initial attempt failed significantly, return null to trigger flow control logic
       return null;
     } catch (error) {
       this.adjustAdaptiveTiming(false); // Adjust timing on error
-      log.error('[VINRetrieverLIB] VIN request failed with exception:', error);
-      // Retry logic for exceptions
+      log.error(
+        '[VINRetrieverLIB] Initial VIN request failed with exception:',
+        error,
+      );
+      // Retry logic for exceptions on the initial request
       if (attempt < VIN_CONSTANTS.RETRIES) {
         await this.delay(VIN_CONSTANTS.DELAYS.INIT);
         return this.sendVINRequest(attempt + 1);
@@ -724,42 +756,44 @@ export class VINRetriever {
    */
   private processVINResponse(rawResponseBytes: number[][]): string | null {
     try {
-      // Convert response to string using ecuUtils
-      const rawString = rawResponseBytes
-        .map(chunk => bytesToString(chunk))
-        .join('');
+      // Combine all bytes and convert to a single hex string
+      const combinedBytes = rawResponseBytes.flat();
+      const fullHexString = bytesToHex(combinedBytes);
 
-      // Extract VIN data from response frames
-      let vinHexData = '';
-      const lines = rawString.split(/[\r\n]+/);
+      log.debug(`[VINRetrieverLIB] Processing Hex: ${fullHexString}`);
 
-      for (const line of lines) {
-        const trimmed = line.trim();
+      // Search for the positive response code '4902'
+      const vinResponseMarker = '4902';
+      const markerIndex = fullHexString.indexOf(vinResponseMarker);
 
-        // Skip empty lines and noise
-        if (!trimmed || /^(>|OK|SEARCHING|AT|CAN|ERROR)/i.test(trimmed)) {
-          continue;
+      if (markerIndex === -1) {
+        log.warn(
+          `[VINRetrieverLIB] Positive response marker '${vinResponseMarker}' not found in hex: ${fullHexString}`,
+        );
+        // Check for the echo '0902' which might indicate command echo instead of response
+        if (fullHexString.includes('0902')) {
+            log.warn(`[VINRetrieverLIB] Found command echo '0902' instead of VIN data.`);
         }
-
-        // Check for frame format (e.g. "0:490201314654")
-        const frameMatch = trimmed.match(/^(\d+):([0-9A-F]+)$/i);
-        if (frameMatch) {
-          const hexData = frameMatch[2];
-          if (hexData.includes('4902')) {
-            vinHexData += hexData.substring(hexData.indexOf('4902') + 4);
-          } else {
-            vinHexData += hexData;
-          }
-          continue;
-        }
-      }
-
-      if (!vinHexData) {
         return null;
       }
 
-      // Convert final hex to ASCII using ecuUtils functions
+      // Extract the hex data following the marker
+      // The marker itself is 4 chars long. The next 2 chars (e.g., '01') are part of the ISO-TP header/metadata.
+      // VIN data starts after these next 2 chars.
+      const vinHexDataStartIndex = markerIndex + vinResponseMarker.length + 2;
+      const vinHexData = fullHexString.substring(vinHexDataStartIndex);
+
+      if (!vinHexData) {
+        log.warn('[VINRetrieverLIB] No VIN hex data found after marker.');
+        return null;
+      }
+
+      log.debug(`[VINRetrieverLIB] Extracted VIN Hex: ${vinHexData}`);
+
+      // Convert extracted hex to ASCII using ecuUtils functions
       const vin = this.hexToAscii(vinHexData);
+      log.debug(`[VINRetrieverLIB] Converted to ASCII: ${vin}`);
+
       return this.isValidVIN(vin) ? vin : null;
     } catch (error) {
       log.error('[VINRetrieverLIB] Error processing VIN response:', error);
@@ -776,7 +810,6 @@ export class VINRetriever {
     activeProtocol: PROTOCOL,
     selectedEcuAddress: string | null,
   ): Promise<ChunkedResponse | null> {
-    // Rest of implementation remains the same
     // Determine CAN type based on passed-in protocol and address
     const is29Bit =
       selectedEcuAddress?.startsWith('18DA') || // Check passed address first
@@ -802,31 +835,59 @@ export class VINRetriever {
     const flowAddr = baseConfig.flowAddr; // Use the determined flow address
 
     for (const fcConfig of VIN_CONSTANTS.FLOW_CONTROL_CONFIGS) {
+      log.debug(
+        `[VINRetrieverLIB] Trying Flow Control Config: ${fcConfig.desc}`,
+      );
       try {
         // For each flow control config, try each header
         for (const header of VIN_CONSTANTS.ALTERNATE_HEADERS) {
+          log.debug(`[VINRetrieverLIB] Setting Header: ATSH${header}`);
           await this.sendCommand(`ATSH${header}`);
-          await this.delay(50);
+          await this.delay(VIN_CONSTANTS.DELAYS.FC_SETUP); // Increased delay
 
           // Apply flow control settings
+          log.debug(
+            `[VINRetrieverLIB] Applying FC Settings: FCSH=${flowAddr}, FCSD=${fcConfig.fcsd}, FCSM=${fcConfig.fcsm}`,
+          );
           await this.sendCommand(`ATFCSH${flowAddr}`);
-          await this.delay(50);
+          await this.delay(VIN_CONSTANTS.DELAYS.FC_SETUP); // Increased delay
           await this.sendCommand(`ATFCSD${fcConfig.fcsd}`);
-          await this.delay(50);
+          await this.delay(VIN_CONSTANTS.DELAYS.FC_SETUP); // Increased delay
           await this.sendCommand(`ATFCSM${fcConfig.fcsm}`);
-          await this.delay(50);
+          await this.delay(VIN_CONSTANTS.DELAYS.FC_SETUP); // Increased delay
 
           // Send VIN request without timeout
+          log.debug(
+            `[VINRetrieverLIB] Sending VIN request (FC: ${fcConfig.desc}, Header: ${header})`,
+          );
           const response = await this.sendCommandRaw(VIN_CONSTANTS.COMMAND, {
-            raw: true
+            raw: true,
           });
 
           if (response?.rawResponse && response.rawResponse.length > 0) {
-            return response;
+            // Check if this response contains the VIN marker '4902'
+            const combinedBytes = response.rawResponse.flat();
+            const hexString = bytesToHex(combinedBytes);
+            if (hexString.includes('4902')) {
+              log.info(
+                `[VINRetrieverLIB] Found potential VIN response with FC: ${fcConfig.desc}, Header: ${header}`,
+              );
+              // Return the successful response immediately
+              return response;
+            } else {
+              log.debug(
+                `[VINRetrieverLIB] Response received but no '4902' marker found (FC: ${fcConfig.desc}, Header: ${header}). Hex: ${hexString}`,
+              );
+            }
+          } else {
+            log.debug(
+              `[VINRetrieverLIB] No response for FC: ${fcConfig.desc}, Header: ${header}`,
+            );
           }
 
-          await this.delay(100);
-        }
+          // Delay before trying the next header within the same FC config
+          await this.delay(VIN_CONSTANTS.DELAYS.COMMAND); // Use standard command delay
+        } // End header loop
       } catch (error) {
         this.adjustAdaptiveTiming(false); // Adjust timing on error
         log.warn(
@@ -836,10 +897,12 @@ export class VINRetriever {
         // Ensure delay before next attempt even if one config throws error
         await this.delay(VIN_CONSTANTS.DELAYS.PROTOCOL);
       }
-    }
+      // Delay before trying the next flow control configuration
+      await this.delay(VIN_CONSTANTS.DELAYS.PROTOCOL);
+    } // End flow control config loop
 
     log.warn(
-      '[VINRetrieverLIB] All flow control configurations attempted without retrieving a valid VIN.',
+      '[VINRetrieverLIB] All flow control configurations attempted without retrieving a valid VIN response containing "4902".',
     );
     return null;
   }

@@ -25,6 +25,7 @@ export interface Delays {
   PROTOCOL: number;
   ADAPTIVE_BASE: number;
   ST_TIMEOUT: number;
+  FC_SETUP: number;
 }
 
 /**
