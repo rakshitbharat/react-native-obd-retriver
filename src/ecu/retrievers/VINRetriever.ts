@@ -12,6 +12,15 @@ import type { ECUState } from '../utils/types';
 import type { ServiceMode } from './types';
 import type { SendCommandFunction } from '../utils/types';
 
+interface ChunkedResponse {
+  data: Uint8Array[];
+}
+
+type SendCommandRawFunction = (
+  command: string,
+  options?: number | { timeout?: number },
+) => Promise<string | ChunkedResponse | null>;
+
 // Protocol/State constants needed internally
 const PROTOCOL_TYPES = {
   CAN: 'CAN',
@@ -47,9 +56,9 @@ type ProtocolState = (typeof PROTOCOL_STATES)[keyof typeof PROTOCOL_STATES];
 export class VINRetriever {
   // Static constants
   private static readonly J1939_HEADERS = {
-    REQUEST: '18DB33F1', // Global request header for J1939
-    RESPONSE: '18DAF110', // Response from engine ECU
-    FLOW_CONTROL: 'ATFCSH18DAF1', // Flow control header
+    REQUEST: '18EAFFF9', // VIN request using PGN 65259 (FEEC)
+    RESPONSE: '18EBFF00', // Expected response header
+    FLOW_CONTROL: 'ATFCSH18EBFF', // Flow control header
   };
 
   static readonly SERVICE_MODE: ServiceMode = {
@@ -66,7 +75,7 @@ export class VINRetriever {
 
   // Instance properties
   private readonly sendCommand: SendCommandFunction;
-  private readonly bluetoothSendCommandRawChunked: SendCommandFunction;
+  private readonly bluetoothSendCommandRawChunked: SendCommandRawFunction;
   private readonly ecuState: ECUState;
   private readonly mode: string = VINRetriever.SERVICE_MODE.REQUEST;
 
@@ -82,7 +91,7 @@ export class VINRetriever {
 
   constructor(
     sendCommand: SendCommandFunction,
-    bluetoothSendCommandRawChunked: SendCommandFunction,
+    bluetoothSendCommandRawChunked: SendCommandRawFunction,
   ) {
     this.sendCommand = sendCommand;
     this.bluetoothSendCommandRawChunked = bluetoothSendCommandRawChunked;
@@ -306,8 +315,9 @@ export class VINRetriever {
           continue;
         }
 
-        // Use raw chunked command for better data handling
-        const response = await this.bluetoothSendCommandRawChunked('0902');
+        // Different request format for J1939 vs standard OBD-II
+        const command = this.isJ1939 ? 'FEEC' : '0902';
+        const response = await this.bluetoothSendCommandRawChunked(command);
 
         if (!response) {
           void log.warn('[VINRetriever] No response received');
@@ -315,14 +325,28 @@ export class VINRetriever {
           continue;
         }
 
-        // Convert raw chunks to hex string if needed
+        // Convert response to a hex string format we can process
         let rawResponse: string;
-        if (Array.isArray(response)) {
+        if (typeof response === 'string') {
+          // Handle string response directly
+          rawResponse = response;
+        } else if (Array.isArray(response)) {
+          // Handle array of bytes
           rawResponse = response
             .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
             .join('');
+        } else if (response instanceof Object && 'data' in response) {
+          // Handle ChunkedResponse type with data property
+          const chunkedResponse = response as ChunkedResponse;
+          rawResponse = chunkedResponse.data
+            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+            .join('');
         } else {
-          rawResponse = response;
+          void log.warn('[VINRetriever] Unexpected response type:', {
+            response,
+          });
+          await this.delay(DELAYS_MS.RETRY);
+          continue;
         }
 
         void log.debug('[VINRetriever] Raw response:', rawResponse);

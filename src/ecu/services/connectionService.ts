@@ -185,16 +185,24 @@ export const getVIN = async (
   ): Promise<string | null> => {
     const result = await sendCommandRaw(cmd);
     if (!result) return null;
+
     // Convert chunks to string if array, otherwise ensure string type
     if (Array.isArray(result)) {
+      // Handle array of bytes directly
       return result
         .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
         .join('');
     }
-    // For non-array results, convert to string if needed
-    if (typeof result === 'object') {
-      return JSON.stringify(result);
+
+    // Handle ChunkedResponse type
+    if (result && typeof result === 'object' && 'data' in result) {
+      // Convert Uint8Array chunks to hex string
+      return (result as { data: Uint8Array[] }).data
+        .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+        .join('');
     }
+
+    // For any other string-like response
     return String(result);
   };
 
