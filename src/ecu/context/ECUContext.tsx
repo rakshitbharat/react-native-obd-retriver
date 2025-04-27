@@ -17,11 +17,7 @@ import {
   clearVehicleDTCs,
   getRawDTCs,
 } from '../services/connectionService';
-import {
-  OBD_MODE,
-  ECUConnectionStatus,
-  type PROTOCOL,
-} from '../utils/constants';
+import { OBD_MODE, ECUConnectionStatus } from '../utils/constants';
 import { ECUActionType } from '../utils/types';
 
 import { initialState, ecuReducer } from './ECUReducer';
@@ -308,7 +304,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   );
 
   // --- Core ECU Connection Logic ---
-  const connectWithECU = async (): Promise<boolean> => {
+  const connectWithECU = useCallback(async (): Promise<boolean> => {
     try {
       await log.debug('[ECUContext] Starting ECU connection process');
       dispatch({ type: ECUActionType.CONNECT_START });
@@ -334,10 +330,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           detectedEcuAddresses: result.detectedEcus ?? [],
         };
 
-        // Dispatch success immediately
         dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
 
-        // Wait for store update with timeout
         try {
           await waitForStateCondition(storeConditions.isConnectedWithECUs);
         } catch (timeoutError) {
@@ -377,9 +371,9 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         stack: error instanceof Error ? error.stack : undefined,
       });
 
-      return false; // Return false instead of throwing
+      return false;
     }
-  };
+  }, [isBluetoothConnected, sendCommand, dispatch]);
 
   // --- Core ECU Disconnect Logic ---
   const disconnectFromECU = useCallback(async (): Promise<void> => {
@@ -406,7 +400,7 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   }, [state.status, dispatch]); // Depends on sendCommand and ECU state
 
   // --- Information Retrieval ---
-  const getECUInformation = async (): Promise<void> => {
+  const getECUInformation = useCallback(async (): Promise<void> => {
     const currentState = getStore();
     if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get ECU info: Not connected to ECU.');
@@ -439,92 +433,91 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         error: errorMsg,
       });
     }
-  };
+  }, [sendCommand, dispatch]);
 
   // --- Get Active Protocol ---
-  const getActiveProtocol = (): {
-    protocol: PROTOCOL | null;
-    name: string | null;
-  } => {
+  const getActiveProtocol = useCallback(() => {
     const currentState = getStore();
     return {
       protocol: currentState.activeProtocol,
       name: currentState.protocolName,
     };
-  };
+  }, []);
 
-  const getRawCurrentDTCs = async (): Promise<RawDTCResponse | null> => {
-    const currentState = getStore();
-    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
-      await log.warn(
-        '[ECUContext] Cannot get raw current DTCs: Not connected to ECU.',
-      );
-      return null;
-    }
-    try {
-      return await getRawDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
-    } catch (error: unknown) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      await log.error('[ECUContext] Failed to get raw current DTCs:', {
-        error: errorMsg,
-      });
-      return null;
-    }
-  };
+  const getRawCurrentDTCs =
+    useCallback(async (): Promise<RawDTCResponse | null> => {
+      const currentState = getStore();
+      if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+        await log.warn(
+          '[ECUContext] Cannot get raw current DTCs: Not connected to ECU.',
+        );
+        return null;
+      }
+      try {
+        return await getRawDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        await log.error('[ECUContext] Failed to get raw current DTCs:', {
+          error: errorMsg,
+        });
+        return null;
+      }
+    }, [sendCommand]);
 
-  const getRawPendingDTCs = async (): Promise<RawDTCResponse | null> => {
-    const currentState = getStore();
-    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
-      await log.warn(
-        '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU.',
-      );
-      return null;
-    }
-    try {
-      return await getRawDTCs(sendCommand, OBD_MODE.PENDING_DTC);
-    } catch (error: unknown) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      await log.error('[ECUContext] Failed to get raw pending DTCs:', {
-        error: errorMsg,
-      });
-      return null;
-    }
-  };
+  const getRawPendingDTCs =
+    useCallback(async (): Promise<RawDTCResponse | null> => {
+      const currentState = getStore();
+      if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+        await log.warn(
+          '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU.',
+        );
+        return null;
+      }
+      try {
+        return await getRawDTCs(sendCommand, OBD_MODE.PENDING_DTC);
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        await log.error('[ECUContext] Failed to get raw pending DTCs:', {
+          error: errorMsg,
+        });
+        return null;
+      }
+    }, [sendCommand]);
 
-  const getRawPermanentDTCs = async (): Promise<RawDTCResponse | null> => {
-    const currentState = getStore();
-    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
-      await log.warn(
-        '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU.',
-      );
-      return null;
-    }
-    try {
-      return await getRawDTCs(sendCommand, OBD_MODE.PERMANENT_DTC);
-    } catch (error: unknown) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      await log.error('[ECUContext] Failed to get raw permanent DTCs:', {
-        error: errorMsg,
-      });
-      return null;
-    }
-  };
+  const getRawPermanentDTCs =
+    useCallback(async (): Promise<RawDTCResponse | null> => {
+      const currentState = getStore();
+      if (currentState.status !== ECUConnectionStatus.CONNECTED) {
+        await log.warn(
+          '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU.',
+        );
+        return null;
+      }
+      try {
+        return await getRawDTCs(sendCommand, OBD_MODE.PERMANENT_DTC);
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        await log.error('[ECUContext] Failed to get raw permanent DTCs:', {
+          error: errorMsg,
+        });
+        return null;
+      }
+    }, [sendCommand]);
 
-  const getVIN = async (): Promise<string | null> => {
+  const getVIN = useCallback(async (): Promise<string | null> => {
     const currentState = getStore();
     if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get VIN: Not connected to ECU.');
       return null;
     }
     try {
-      // Pass our internal sendCommandRaw wrapper function
       return await getVehicleVIN(sendCommand, sendCommandRaw);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ECUContext] Failed to get VIN:', { error: errorMsg });
       return null;
     }
-  };
+  }, [sendCommand, sendCommandRaw]);
 
   // Add clearDTCs implementation
   const clearDTCs = useCallback(
