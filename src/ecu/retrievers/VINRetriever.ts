@@ -336,14 +336,18 @@ export class VINRetriever {
         } else if (Array.isArray(response)) {
           // Handle array of bytes
           rawResponse = response
-            .map((chunk: number[] | Uint8Array) => Buffer.from(chunk).toString('hex').toUpperCase())
+            .map((chunk: number[] | Uint8Array) =>
+              Buffer.from(chunk).toString('hex').toUpperCase(),
+            )
             .join('');
         } else if (response instanceof Object && 'chunks' in response) {
           // Handle ChunkedResponse type
           const chunkedResponse = response as ChunkedResponse;
           // Convert raw response array to hex string
           rawResponse = chunkedResponse.rawResponse
-            .map((bytes: number[]) => Buffer.from(bytes).toString('hex').toUpperCase())
+            .map((bytes: number[]) =>
+              Buffer.from(bytes).toString('hex').toUpperCase(),
+            )
             .join('');
         } else {
           void log.warn('[VINRetriever] Unexpected response type:', {
