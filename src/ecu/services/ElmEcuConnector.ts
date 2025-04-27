@@ -61,11 +61,9 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const COMMAND_DELAY_MS = 100;
 const RESET_DELAY_MS = 1000;
 const PROTOCOL_SWITCH_DELAY_MS = 300; // Extra delay when switching protocols
-const PROTOCOL_DETECT_RETRIES = 2;
 const PROTOCOL_INIT_DELAY_MS = 500; // Delay after protocol initialization
 const PROTOCOL_TEST_RETRY_DELAY_MS = 300;
 const COMMAND_RETRY_DELAY_MS = 500;
-const INITIAL_CONNECT_TIMEOUT = 10000; // 10 seconds for initial connection
 
 const DEMO_DEVICE_ID = 'DEMO_DEVICE'; // Or your actual demo device identifier
 
