@@ -299,8 +299,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         throw error;
       }
     },
-    // Update dependency array to use the imported chunked function
-    [isBluetoothConnected, bluetoothSendCommandRawChunked, log],
+    // Only include dependencies that can change and affect rendering
+    [isBluetoothConnected, bluetoothSendCommandRawChunked],
   );
 
   // --- Core ECU Connection Logic ---
