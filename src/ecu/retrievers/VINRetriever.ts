@@ -1,7 +1,7 @@
 import { log } from '../../utils/logger';
 import { getStore } from '../context/ECUStore';
 import { processVINResponse } from '../utils/responseHandler';
-import { DELAYS_MS, RESPONSE_KEYWORDS } from '../utils/constants';
+import { DELAYS_MS } from '../utils/constants';
 import type { SendCommandFunction, SendCommandRawFunction } from './types';
 
 // Constants for VIN retrieval
@@ -57,7 +57,8 @@ function decodeVINResponse(vinHex: string): string | null {
 
     const vin = chars.join('').trim();
     return /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin) ? vin : null;
-  } catch (e) {
+  } catch {
+    log.error('[VINRetriever] Error decoding VIN response');
     return null;
   }
 }

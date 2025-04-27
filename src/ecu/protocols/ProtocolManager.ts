@@ -1,3 +1,8 @@
+import {
+  getProtocolConfig,
+  isCanProtocol,
+  isKwpProtocol,
+} from './config/protocolConfigs';
 import { log } from '../../utils/logger';
 import {
   ELM_COMMANDS,
@@ -5,13 +10,25 @@ import {
   PROTOCOL,
   PROTOCOL_DESCRIPTIONS,
   PROTOCOL_TRY_ORDER,
-  STANDARD_PIDS, // Import standard PIDs
 } from '../utils/constants';
 
-import type { SendCommandFunction } from '../utils/types';
+import type {
+  SendCommandFunction,
+  CanProtocolConfig,
+  ProtocolConfig,
+} from '../utils/types';
 
-// Use the standard PID 0100 (Supported PIDs [01-20]) for protocol testing
-const PROTOCOL_TEST_COMMAND = STANDARD_PIDS.SUPPORTED_PIDS_1;
+// Protocol test command with standard PID
+const PROTOCOL_TEST_COMMAND = '0100'; // Get supported PIDs [01-20]
+
+/**
+ * Type guard to check if a protocol config is a CAN protocol config
+ */
+function isCanProtocolConfig(
+  config: ProtocolConfig | null,
+): config is ProtocolConfig & CanProtocolConfig {
+  return config !== null && 'flowControlHeader' in config && 'header' in config;
+}
 
 /**
  * Manages OBD protocol detection, initialization, and communication setup
@@ -424,76 +441,158 @@ export class ProtocolManager {
       );
       return;
     }
+
+    const config = getProtocolConfig(protocol);
     await log.debug(
       `[ProtocolManager] Configuring settings for protocol: ${protocol}`,
+      {
+        config: config ? 'Found' : 'Not Found',
+      },
     );
+
     try {
-      // Reset all settings first
-      await this.sendCommand('ATZ');
-      await this.delay(DELAYS_MS.RESET);
-
-      // Basic settings
-      await this.sendCommand('ATE0'); // Echo off
-      await this.sendCommand('ATL0'); // Line feeds off
-      await this.sendCommand('ATS0'); // Spaces off
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
-
-      // Set Adaptive Timing
-      const adaptTimingCmd =
-        protocol === PROTOCOL.ISO_14230_4_KWP ||
-        protocol === PROTOCOL.ISO_14230_4_KWP_FAST
-          ? ELM_COMMANDS.ADAPTIVE_TIMING_2 // Use ATAT2 for KWP
-          : ELM_COMMANDS.ADAPTIVE_TIMING_1; // Use ATAT1 for others
+      // 1. Set Adaptive Timing based on protocol type
+      const adaptiveMode = isKwpProtocol(protocol) ? 2 : 1; // ATAT2 for KWP, ATAT1 for others
       await log.debug(
-        `[ProtocolManager] Setting adaptive timing (${adaptTimingCmd})`,
+        `[ProtocolManager] Setting adaptive timing mode ${adaptiveMode}`,
       );
-      await this.sendCommand(adaptTimingCmd);
+      await this.sendCommand(
+        adaptiveMode === 2
+          ? ELM_COMMANDS.ADAPTIVE_TIMING_2
+          : ELM_COMMANDS.ADAPTIVE_TIMING_1,
+        1000,
+      );
       await this.delay(DELAYS_MS.COMMAND_SHORT);
 
-      // Set Headers and CAN configuration
-      const isCan =
-        protocol >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K &&
-        protocol <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8;
+      // 2. Set protocol timeout
+      if (config?.timing?.responseTimeoutMs) {
+        const timeoutHex = Math.floor(config.timing.responseTimeoutMs / 4)
+          .toString(16)
+          .toUpperCase()
+          .padStart(2, '0');
+        await log.debug(
+          `[ProtocolManager] Setting timeout ${config.timing.responseTimeoutMs}ms`,
+        );
+        await this.sendCommand(
+          `${ELM_COMMANDS.SET_TIMEOUT}${timeoutHex}`,
+          1000,
+        );
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      }
 
-      if (isCan) {
-        // For CAN protocols, we need headers on and proper flow control
-        await log.debug('[ProtocolManager] Configuring CAN protocol settings');
-        await this.sendCommand(ELM_COMMANDS.HEADERS_ON);
-        await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON);
-
-        // Set flow control IDs based on protocol type
-        const is11Bit =
-          protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_500K ||
-          protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_250K;
-
-        if (is11Bit) {
-          await this.sendCommand('ATFCSH7E0'); // Flow control send header
-          await this.sendCommand('ATFCSD300000'); // Flow control data
-          await this.sendCommand('ATFCSM1'); // Flow control mode
+      // 3. Configure protocol-specific settings
+      if (isCanProtocol(protocol)) {
+        if (isCanProtocolConfig(config)) {
+          await this.configureCanProtocol(config);
         } else {
-          await this.sendCommand('ATFCSH18DA10F1'); // Extended CAN flow control header
-          await this.sendCommand('ATFCSD300000');
-          await this.sendCommand('ATFCSM1');
+          await log.warn(
+            '[ProtocolManager] CAN protocol detected but config missing CAN settings',
+          );
+          await this.configureBasicCanSettings();
         }
       } else {
-        // For non-CAN protocols
+        // Non-CAN protocols typically work better with headers OFF
         await log.debug(
           '[ProtocolManager] Configuring non-CAN protocol settings',
         );
-        await this.sendCommand(ELM_COMMANDS.HEADERS_OFF);
-        await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_OFF);
+        await this.sendCommand(ELM_COMMANDS.HEADERS_OFF, 1000);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+        await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_OFF, 1000);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
       }
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
 
-      await log.debug(
-        `[ProtocolManager] Basic settings configured for protocol ${protocol}.`,
+      // 4. Protocol-specific initialization commands
+      if (config?.initSequence?.length) {
+        for (const cmd of config.initSequence) {
+          await log.debug(`[ProtocolManager] Protocol init command: ${cmd}`);
+          await this.sendCommand(cmd, 1000);
+          await this.delay(DELAYS_MS.COMMAND_SHORT);
+        }
+      }
+
+      await log.info(
+        '[ProtocolManager] Protocol configuration completed successfully',
       );
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.warn(
         '[ProtocolManager] Error during protocol settings configuration:',
-        { error: errorMsg },
+        {
+          error: errorMsg,
+        },
       );
+    }
+  }
+
+  /**
+   * Configures basic CAN settings when full config is not available
+   */
+  private async configureBasicCanSettings(): Promise<void> {
+    await log.debug('[ProtocolManager] Configuring basic CAN settings');
+
+    // Enable headers and CAN formatting
+    await this.sendCommand(ELM_COMMANDS.HEADERS_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set default flow control
+    const defaultFlowControl = [
+      'ATFCSH7E0', // Default 11-bit flow control header
+      'ATFCSD300000', // Default: BS=0, ST=0ms
+      'ATFCSM1', // Auto mode
+    ];
+
+    for (const cmd of defaultFlowControl) {
+      await log.debug(`[ProtocolManager] Setting default flow control: ${cmd}`);
+      await this.sendCommand(cmd, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+  }
+
+  /**
+   * Configures CAN protocol specific settings
+   */
+  private async configureCanProtocol(
+    config: ProtocolConfig & CanProtocolConfig,
+  ): Promise<void> {
+    await log.debug('[ProtocolManager] Configuring CAN protocol settings', {
+      header: config.header,
+      flowControlHeader: config.flowControlHeader,
+    });
+
+    // Enable headers and CAN formatting
+    await this.sendCommand(ELM_COMMANDS.HEADERS_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set CAN ID filter if specified
+    if (config.receiveFilter) {
+      await this.sendCommand(`ATCF${config.receiveFilter}`, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // Set flow control
+    const flowControlCommands = [
+      `ATFCSH${config.flowControlHeader}`,
+      'ATFCSD300000', // Default: BS=0, ST=0ms
+      'ATFCSM1', // Auto mode
+    ];
+
+    for (const cmd of flowControlCommands) {
+      await log.debug(`[ProtocolManager] Setting flow control: ${cmd}`);
+      await this.sendCommand(cmd, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // Apply any additional format commands
+    if (config.formatCommands?.length) {
+      for (const cmd of config.formatCommands) {
+        await log.debug(`[ProtocolManager] Applying format command: ${cmd}`);
+        await this.sendCommand(cmd, 1000);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      }
     }
   }
 
