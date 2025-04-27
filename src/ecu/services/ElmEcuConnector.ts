@@ -243,12 +243,30 @@ export class ElmEcuConnector {
           }
 
           // 2. Reset the ELM device
-          if (
-            !(await this._executeCommand(ELM_COMMANDS.RESET, RESET_DELAY_MS))
-          ) {
-            throw new Error('Failed to reset ELM device (ATZ)');
+          const resetResponse = await this._sendCommandInternal(
+            ELM_COMMANDS.RESET,
+            RESET_DELAY_MS,
+          );
+          // --- MODIFICATION START ---
+          // Be more lenient: Fail only on null response or critical communication failure.
+          // The _sendCommandInternal already throws on COMMAND_FAILED.
+          // Allow any other response (like ATZ62...) as potential success.
+          if (resetResponse === null) {
+            // --- MODIFICATION END ---
+            // Check if it's the specific COMMAND_FAILED error (already handled by throw in _sendCommandInternal)
+            // if (this.status === ProtocolStatus.COMMAND_FAILED) { ... } // This check is likely redundant now
+
+            // Log the actual response if it wasn't null but considered an error (no longer considered error here)
+            // const responseDetails = resetResponse ? `Response: ${resetResponse.trim()}` : 'No response';
+            throw new Error(
+              `Failed to reset ELM device (ATZ). No response received.`, // Modified error message
+            );
           }
-          this.log('debug', 'ELM device reset (ATZ OK)');
+          // If we got *any* non-null response, consider reset successful
+          this.log(
+            'debug',
+            `ELM device reset successful (ATZ response received: ${resetResponse.trim()})`,
+          );
           await _delay(RESET_DELAY_MS); // Crucial delay after reset
 
           // 3. Initialize ELM settings
@@ -447,35 +465,69 @@ export class ElmEcuConnector {
   private async _initializeElm(): Promise<boolean> {
     this.log('info', 'Initializing ELM settings...');
     const initCommands = [
-      ELM_COMMANDS.ECHO_OFF,
-      ELM_COMMANDS.LINEFEEDS_OFF,
-      ELM_COMMANDS.SPACES_OFF,
-      ELM_COMMANDS.HEADERS_ON, // Headers needed for protocol/ECU detection
-      ELM_COMMANDS.ADAPTIVE_TIMING_AUTO, // Use adaptive timing
+      ELM_COMMANDS.ECHO_OFF, // ATE0
+      ELM_COMMANDS.LINEFEEDS_OFF, // ATL0
+      ELM_COMMANDS.SPACES_OFF, // ATS0
+      ELM_COMMANDS.HEADERS_ON, // ATH1 - Important for multi-ECU detection
+      ELM_COMMANDS.ADAPTIVE_TIMING_AUTO, // ATAT1 or ATAT2 are common
+      // Consider adding a specific timeout setting if needed, e.g.:
       `${ELM_COMMANDS.SET_TIMEOUT}64`, // Set timeout (e.g., 100ms = 0x64) - adjust as needed
     ];
 
     for (const cmd of initCommands) {
-      // Use _sendCommandInternal directly as _executeCommand might be too strict for init
-      const response = await this._sendCommandInternal(cmd);
-      if (response === null) {
-        this.log(
-          'warn',
-          `No response during init for command: ${cmd}. Continuing...`,
-        );
-        // Some ELM clones might not respond reliably to all init commands
-        // Decide if this should be a hard failure.
-        // return false;
-      } else if (this._isErrorResponse(response)) {
+      try {
+        // Use _sendCommandInternal directly as _executeCommand might be too strict for init
+        const response = await this._sendCommandInternal(cmd, COMMAND_DELAY_MS);
+
+        // Check if the response indicates an error, but treat it as non-fatal for init
+        if (response !== null && this._isErrorResponse(response)) {
+          // --- MODIFICATION START ---
+          // Check more specifically for potentially benign "errors" like CMD62? or CMD62OK
+          const cleanedResp = _cleanResponse(response);
+          // Remove spaces and potential control characters for comparison
+          const cleanedCmd = cmd.replace(/\\s/g, '').replace(/[\\r\\n>]/g, '');
+
+          // Pattern: Command echo + '62' + optional '?' or 'OK' + optional prompt/junk
+          // Make pattern flexible for potential variations after cleaning
+          const benignPattern = new RegExp(`^${cleanedCmd}62(?:\\?|OK)?.*$`);
+
+          if (benignPattern.test(cleanedResp)) {
+            this.log(
+              'debug', // Log as debug, not warn/error
+              `Ignoring benign response during init: ${cmd} -> ${response.trim()}`,
+            );
+            // Continue loop - this response is acceptable for init
+          } else {
+            // Log other errors as warnings but still continue
+            this.log(
+              'warn',
+              `Non-critical error/unexpected response during init for command: ${cmd} -> ${response.trim()}. Continuing...`,
+            );
+          }
+          // Continue to the next command even if there's an unexpected response pattern
+          // --- MODIFICATION END ---
+        } else if (response === null) {
+          this.log(
+            'warn',
+            `No response received during init for command: ${cmd}. Continuing...`,
+          );
+          // Also continue if no response, might not be critical for all init commands
+        }
+        // If response is not null and not an error (or handled above), it's okay.
+        // No need for explicit 'OK' check here.
+      } catch (error: unknown) {
+        // If _sendCommandInternal throws (e.g., COMMAND_FAILED or timeout), it's critical
         this.log(
           'error',
-          `Error response during init for command: ${cmd} -> ${response.trim()}`,
+          `Critical error during init command ${cmd}. Aborting initialization.`,
+          { error: error instanceof Error ? error.message : String(error) },
         );
-        return false;
+        return false; // Critical failure, stop initialization
       }
-      // No need to check for 'OK' explicitly for all init commands
     }
-    return true;
+
+    this.log('debug', 'Finished sending ELM initialization commands.');
+    return true; // Assume success if the loop completes without critical errors
   }
 
   /** Attempts to detect the OBD protocol */
@@ -485,71 +537,90 @@ export class ElmEcuConnector {
       'Attempting automatic protocol detection (ATSP0 + 0100)...',
     );
 
+    let autoDetectSucceeded = false;
     // 1. Try Auto Protocol + 0100
-    if (!(await this._setProtocol(ElmProtocols.AUTO))) return null;
-    await _delay(PROTOCOL_SET_DELAY_MS);
+    const setAutoResult = await this._setProtocol(ElmProtocols.AUTO);
+    if (setAutoResult) {
+      await _delay(PROTOCOL_SET_DELAY_MS);
+      const response0100 = await this._sendCommandInternal(TEST_COMMAND_PID);
 
-    const response0100 = await this._sendCommandInternal(TEST_COMMAND_PID);
-
-    if (this._isValidDataResponse(response0100)) {
-      this.log(
-        'debug',
-        `Received valid response for ${TEST_COMMAND_PID} on Auto protocol.`,
-      );
-      // Now check which protocol was actually used
-      const detected = await this._checkProtocolNumber();
-      if (detected !== null) {
+      if (this._isValidDataResponse(response0100)) {
         this.log(
-          'info',
-          `Auto-detection successful. Protocol identified as: ${detected}`,
+          'debug',
+          `Received valid response for ${TEST_COMMAND_PID} on Auto protocol. Checking actual protocol used...`,
         );
-        // Try to detect ECUs from the 0100 response
-        await this._handleEcuDetection(response0100);
-        return detected;
+        const detected = await this._checkProtocolNumber();
+        if (detected !== null) {
+          this.log(
+            'info',
+            `Auto-detection successful. Protocol identified as: ${detected}`,
+          );
+          await this._handleEcuDetection(response0100);
+          autoDetectSucceeded = true;
+          return detected; // Success! Return the detected protocol.
+        } else {
+          this.log(
+            'warn',
+            `Command ${TEST_COMMAND_PID} succeeded on Auto, but failed to read protocol number (ATDPN). Will try specific protocols.`,
+          );
+        }
       } else {
         this.log(
           'warn',
-          `Command ${TEST_COMMAND_PID} succeeded, but failed to read protocol number (ATDPN).`,
+          `Command ${TEST_COMMAND_PID} failed or gave invalid response on Auto protocol. Will try specific protocols.`,
         );
       }
     } else {
-      this.log('warn', `Command ${TEST_COMMAND_PID} failed on Auto protocol.`);
+      // Log if setting ATSP0 failed, but proceed to specific protocols
+      this.log(
+        'warn',
+        'Setting Auto protocol (ATSP0) failed or returned unexpected response. Proceeding to try specific protocols...',
+      );
     }
 
-    // 2. If Auto failed, iterate through specific protocols
-    this.log(
-      'info',
-      'Auto-detection failed or inconclusive. Trying specific protocols...',
-    );
-    for (const protocol of PROTOCOL_TRY_ORDER) {
+    // 2. If Auto failed or was inconclusive, iterate through specific protocols
+    if (!autoDetectSucceeded) {
       this.log(
         'info',
-        `Trying protocol: ${ELM_PROTOCOL_DESCRIPTIONS[protocol]} (ID: ${protocol})...`,
+        'Auto-detection failed or inconclusive. Trying specific protocols...',
       );
-      this._updateStatus(ProtocolStatus.DETECTING_PROTOCOL); // Update status for each try
-
-      if (!(await this._setProtocol(protocol))) continue; // Try next if setting fails
-      await _delay(PROTOCOL_SET_DELAY_MS);
-
-      // Send test command for this protocol
-      const testResponse = await this._sendCommandInternal(TEST_COMMAND_PID);
-
-      if (this._isValidDataResponse(testResponse)) {
-        this.log('info', `Protocol ${protocol} seems successful.`);
-        // Try to detect ECUs from the response
-        await this._handleEcuDetection(testResponse);
-        return protocol;
-      } else {
+      for (const protocol of PROTOCOL_TRY_ORDER) {
         this.log(
-          'debug',
-          `Protocol ${protocol} failed test command ${TEST_COMMAND_PID}.`,
+          'info',
+          `Trying protocol: ${ELM_PROTOCOL_DESCRIPTIONS[protocol]} (ID: ${protocol})...`,
         );
-        // Optionally send ATPC (Protocol Close) before trying the next one
-        // await this._sendCommandInternal(ELM_COMMANDS.PROTOCOL_CLOSE);
-        // await _delay(COMMAND_DELAY_MS);
+        this._updateStatus(ProtocolStatus.DETECTING_PROTOCOL); // Update status for each try
+
+        // Try setting the specific protocol
+        if (!(await this._setProtocol(protocol))) {
+          this.log(
+            'debug',
+            `Failed to set protocol ${protocol}. Trying next...`,
+          );
+          continue; // Try next if setting fails
+        }
+        await _delay(PROTOCOL_SET_DELAY_MS);
+
+        // Send test command for this protocol
+        const testResponse = await this._sendCommandInternal(TEST_COMMAND_PID);
+
+        if (this._isValidDataResponse(testResponse)) {
+          this.log('info', `Protocol ${protocol} seems successful.`);
+          await this._handleEcuDetection(testResponse);
+          return protocol; // Success! Return this protocol.
+        } else {
+          this.log(
+            'debug',
+            `Protocol ${protocol} failed test command ${TEST_COMMAND_PID}. Response: ${testResponse?.trim() ?? 'null'}`,
+          );
+          // Optionally send ATPC (Protocol Close) before trying the next one, might help some adapters
+          // await this._sendCommandInternal(ELM_COMMANDS.PROTOCOL_CLOSE);
+          // await _delay(COMMAND_DELAY_MS);
+        }
       }
     }
 
+    // If we reach here, neither auto nor specific protocols worked
     this.log(
       'error',
       'Failed to detect any working protocol after trying all options.',
@@ -595,18 +666,119 @@ export class ElmEcuConnector {
   /** Sets the protocol using ATSP command */
   private async _setProtocol(protocol: ElmProtocols): Promise<boolean> {
     const command = `${ELM_COMMANDS.SET_PROTOCOL_PREFIX}${protocol}`;
-    return await this._executeCommand(command, PROTOCOL_SET_DELAY_MS);
+    try {
+      // Use _sendCommandInternal for more lenient response checking
+      const response = await this._sendCommandInternal(
+        command,
+        PROTOCOL_SET_DELAY_MS,
+      );
+
+      // --- MODIFICATION START ---
+      // Consider success if we get *any* response that isn't explicitly a known *critical* error,
+      // OR if it matches the benign CMD62? / CMD62OK pattern, OR is just OK.
+      if (response !== null) {
+        const cleanedResp = _cleanResponse(response);
+        // Remove spaces and potential control characters for comparison
+        const cleanedCmd = command
+          .replace(/\\s/g, '')
+          .replace(/[\\r\\n>]/g, '');
+
+        // Pattern: Command echo + '62' + optional '?' or 'OK' + optional prompt/junk
+        // Make pattern flexible for potential variations after cleaning
+        const benignPattern = new RegExp(`^${cleanedCmd}62(?:\\?|OK)?.*$`);
+        // Also accept simple "OK" possibly surrounded by whitespace/prompt
+        const okPattern = /(?:^|\s)OK(?:\s|$)/i; // Case-insensitive OK
+
+        // Check if it's NOT an error OR if it matches benign patterns
+        if (
+          okPattern.test(cleanedResp) ||
+          benignPattern.test(cleanedResp) ||
+          !this._isErrorResponse(response)
+        ) {
+          this.log(
+            'debug',
+            `Set protocol command ${command} successful (response: ${response.trim()})`,
+          );
+          return true;
+        } else {
+          // It was an error response not matching the benign patterns or OK
+          this.log(
+            'warn',
+            `Set protocol command ${command} received error response: ${response.trim()}`,
+          );
+          return false;
+        }
+      } else {
+        // No response is a failure for set protocol
+        this.log(
+          'warn',
+          `Set protocol command ${command} received no response.`,
+        );
+        return false;
+      }
+      // --- MODIFICATION END ---
+    } catch (error) {
+      // Catch critical errors from _sendCommandInternal (like COMMAND_FAILED)
+      this.log(
+        'error',
+        `Critical error setting protocol ${protocol} with command ${command}.`,
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+      return false;
+    }
   }
 
   private _isErrorResponse(response: string | null): boolean {
-    if (!response) return true; // No response is an error in context
+    if (!response) return false; // No response isn't necessarily an ELM error message
     const cleaned = _cleanResponse(response);
-    // Check against known error strings
-    for (const errorStr of RESPONSE_ERRORS) {
-      if (cleaned.includes(errorStr)) {
+
+    // --- MODIFICATION START ---
+    // If it contains "OK" (case-insensitive), it's likely not an error, regardless of other content.
+    if (cleaned.toUpperCase().includes('OK')) {
+      return false;
+    }
+
+    // Check against known error strings first (case-insensitive)
+    // --- MODIFICATION END ---
+    if (RESPONSE_ERRORS && RESPONSE_ERRORS.length > 0) {
+      for (const errorStr of RESPONSE_ERRORS) {
+        // --- MODIFICATION START ---
+        // Make check case-insensitive
+        if (cleaned.toUpperCase().includes(errorStr.toUpperCase())) {
+          // --- MODIFICATION END ---
+          this.log(
+            'debug',
+            `Detected error response based on known error: "${errorStr}" in "${cleaned}"`,
+          );
+          return true;
+        }
+      }
+    } else {
+      // Fallback basic checks if RESPONSE_ERRORS is not defined/empty
+      // --- MODIFICATION START ---
+      // Be more specific about '?' - only treat it as error if it's alone or with known errors.
+      const upperCleaned = cleaned.toUpperCase();
+      if (
+        upperCleaned.includes('ERROR') || // Keep general errors
+        upperCleaned.includes('UNABLE TO CONNECT') ||
+        upperCleaned.includes('NO DATA') ||
+        upperCleaned.includes('STOPPED') ||
+        upperCleaned.includes('BUFFER FULL') ||
+        upperCleaned.includes('CAN ERROR') ||
+        upperCleaned.includes('FC ERROR') || // Flow Control Error
+        upperCleaned.includes('LV RESET') || // Low Voltage Reset
+        cleaned === '?' // Only if '?' is the entire response
+      ) {
+        this.log(
+          'debug',
+          `Detected error response based on fallback check in "${cleaned}"`,
+        );
         return true;
       }
+      // --- MODIFICATION END ---
     }
+
+    // If none of the above matched, assume it's not an error response.
     return false;
   }
 

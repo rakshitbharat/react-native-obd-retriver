@@ -1,236 +1,368 @@
 import { log } from '../../utils/logger';
-import { getStore } from '../context/ECUStore';
-import { processVINResponse } from '../utils/responseHandler';
-import { DELAYS_MS } from '../utils/constants';
-import type { SendCommandFunction, SendCommandRawFunction } from './types';
+import { ecuStore } from '../context/ECUStore';
+import {
+  DELAYS_MS,
+  STANDARD_PIDS,
+  PROTOCOL,
+  ECUConnectionStatus,
+} from '../utils/constants';
+import { isResponseError } from '../utils/helpers';
 
-// Constants for VIN retrieval
-const VIN_CONSTANTS = {
-  HEADERS: {
-    CAN_11BIT: '7DF',
-    CAN_29BIT: '18DB33F1',
-  },
-  FLOW_CONTROL: {
-    CAN_11BIT: {
-      SEND_ID: '7E0',
-      RECEIVE_ID: '7E8',
-      FLOW_ID: '7E0',
-    },
-    CAN_29BIT: {
-      SEND_ID: '18DA10F1',
-      RECEIVE_ID: '18DAF110',
-      FLOW_ID: '18DA10F1',
-    },
-  },
-  DELAYS: {
-    INIT: 300,
-    FLOW_CONTROL: 100,
-    RETRY: 2000,
-  },
-  INIT_COMMANDS: [
-    { cmd: 'ATZ', delay: 1000 },
-    { cmd: 'ATE0', delay: 100 },
-    { cmd: 'ATL0', delay: 100 },
-    { cmd: 'ATH1', delay: 100 },
-    { cmd: 'ATCAF1', delay: 100 },
-  ],
-};
+import type { ECUState } from '../utils/types';
+import type { ServiceMode } from './types';
+import type { SendCommandFunction } from '../utils/types';
 
-function decodeVINResponse(vinHex: string): string | null {
-  try {
-    // Remove any whitespace and '>' prompts
-    const cleanHex = vinHex.replace(/\s+|>/g, '').toUpperCase();
+// Protocol/State constants needed internally
+const PROTOCOL_TYPES = {
+  CAN: 'CAN',
+  KWP: 'KWP',
+  ISO9141: 'ISO9141',
+  J1850: 'J1850',
+  UNKNOWN: 'UNKNOWN',
+} as const;
+type ProtocolType = (typeof PROTOCOL_TYPES)[keyof typeof PROTOCOL_TYPES];
 
-    // Remove service mode and PID bytes if present (4902)
-    const dataHex = cleanHex.replace(/^4902/, '');
+const HEADER_FORMATS = {
+  CAN_11BIT: '11bit',
+  CAN_29BIT: '29bit',
+  KWP: 'kwp',
+  ISO9141: 'iso9141',
+  J1850: 'j1850',
+  UNKNOWN: 'unknown',
+} as const;
+type HeaderFormat = (typeof HEADER_FORMATS)[keyof typeof HEADER_FORMATS];
 
-    // Convert hex pairs to ASCII, filtering non-printable characters
-    const chars: string[] = [];
-    for (let i = 0; i < dataHex.length; i += 2) {
-      const hex = dataHex.substring(i, i + 2);
-      const charCode = parseInt(hex, 16);
-      // Only allow printable ASCII characters (32-126)
-      if (charCode >= 32 && charCode <= 126) {
-        chars.push(String.fromCharCode(charCode));
-      }
-    }
+const PROTOCOL_STATES = {
+  INITIALIZED: 'INITIALIZED',
+  CONFIGURING: 'CONFIGURING',
+  READY: 'READY',
+  ERROR: 'ERROR',
+} as const;
+type ProtocolState = (typeof PROTOCOL_STATES)[keyof typeof PROTOCOL_STATES];
 
-    const vin = chars.join('').trim();
-    return /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin) ? vin : null;
-  } catch {
-    log.error('[VINRetriever] Error decoding VIN response');
-    return null;
-  }
-}
-
+/**
+ * VINRetriever class for handling Vehicle Identification Number retrieval
+ * with special support for J1939 protocol
+ */
 export class VINRetriever {
+  // Static constants
+  private static readonly J1939_HEADERS = {
+    REQUEST: '18DB33F1', // Global request header for J1939
+    RESPONSE: '18DAF110', // Response from engine ECU
+    FLOW_CONTROL: 'ATFCSH18DAF1', // Flow control header
+  };
+
+  static readonly SERVICE_MODE: ServiceMode = {
+    REQUEST: STANDARD_PIDS.VIN, // '0902'
+    RESPONSE: 0x49,
+    NAME: 'VEHICLE_VIN',
+    DESCRIPTION: 'Vehicle Identification Number',
+    troubleCodeType: 'INFO',
+  };
+
+  // Timeout constants
+  private static readonly DATA_TIMEOUT = 10000;
+  private static readonly COMMAND_TIMEOUT = 5000;
+
+  // Instance properties
   private readonly sendCommand: SendCommandFunction;
-  private maxRetries = 3;
-  private retryDelay = 2000;
-  private currentFlowConfig: {
-    sendId: string;
-    receiveId: string;
-    flowId: string;
-  } | null = null;
+  private readonly bluetoothSendCommandRawChunked: SendCommandFunction;
+  private readonly ecuState: ECUState;
+  private readonly mode: string = VINRetriever.SERVICE_MODE.REQUEST;
+
+  // Protocol and state tracking
+  private isCan: boolean = false;
+  private isJ1939: boolean = false;
+  private protocolNumber: PROTOCOL | number = PROTOCOL.AUTO;
+  private protocolType: ProtocolType = PROTOCOL_TYPES.UNKNOWN;
+  private headerFormat: HeaderFormat = HEADER_FORMATS.UNKNOWN;
+  private ecuResponseHeader: string | null = null;
+  private protocolState: ProtocolState = PROTOCOL_STATES.INITIALIZED;
+  private isHeaderEnabled: boolean = false;
 
   constructor(
     sendCommand: SendCommandFunction,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    sendCommandRaw: SendCommandRawFunction,
+    bluetoothSendCommandRawChunked: SendCommandFunction,
   ) {
     this.sendCommand = sendCommand;
+    this.bluetoothSendCommandRawChunked = bluetoothSendCommandRawChunked;
+    const currentState = ecuStore.getState();
+    this.ecuState = currentState;
+
+    if (
+      currentState.status === ECUConnectionStatus.CONNECTED &&
+      currentState.activeProtocol !== null
+    ) {
+      this.protocolNumber = currentState.activeProtocol;
+      this.isCan = this.protocolNumber >= 6 && this.protocolNumber <= 20;
+      this.isJ1939 = this.protocolNumber === 10; // Protocol 10 is J1939
+      this.protocolType = this.isCan
+        ? PROTOCOL_TYPES.CAN
+        : PROTOCOL_TYPES.UNKNOWN;
+      this.headerFormat = this.isCan
+        ? this.protocolNumber % 2 === 0
+          ? HEADER_FORMATS.CAN_11BIT
+          : HEADER_FORMATS.CAN_29BIT
+        : HEADER_FORMATS.UNKNOWN;
+
+      this.ecuResponseHeader = this.isJ1939
+        ? VINRetriever.J1939_HEADERS.RESPONSE
+        : (currentState.selectedEcuAddress ??
+          currentState.detectedEcuAddresses?.[0] ??
+          null);
+
+      this.protocolState = PROTOCOL_STATES.READY;
+    }
   }
 
-  private async delay(ms: number): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, Math.max(ms, 50)));
+  // Helper method to create a delay
+  private delay(ms: number): Promise<void> {
+    return new Promise<void>(resolve => {
+      setTimeout(resolve, ms);
+    });
   }
 
-  private async configureFlowControl(isExtended: boolean): Promise<void> {
-    const config = isExtended
-      ? VIN_CONSTANTS.FLOW_CONTROL.CAN_29BIT
-      : VIN_CONSTANTS.FLOW_CONTROL.CAN_11BIT;
+  /**
+   * Configure adapter specifically for VIN retrieval
+   */
+  private async _configureAdapterForVIN(): Promise<boolean> {
+    void log.info('[VINRetriever] Configuring adapter for VIN retrieval...');
 
-    this.currentFlowConfig = {
-      sendId: config.SEND_ID,
-      receiveId: config.RECEIVE_ID,
-      flowId: config.FLOW_ID,
-    };
+    if (this.protocolState === PROTOCOL_STATES.READY) {
+      void log.debug('[VINRetriever] Adapter already configured');
+      return true;
+    }
 
-    // Set flow control
-    await this.sendCommand(`ATFCSH${config.FLOW_ID}`);
-    await this.delay(DELAYS_MS.COMMAND_SHORT);
-    await this.sendCommand('ATFCSD300000');
-    await this.delay(DELAYS_MS.COMMAND_SHORT);
-    await this.sendCommand('ATFCSM1');
-    await this.delay(DELAYS_MS.COMMAND_SHORT);
-  }
+    this.protocolState = PROTOCOL_STATES.CONFIGURING;
 
-  private async setHeader(header: string): Promise<boolean> {
-    const response = await this.sendCommand(`ATSH${header}`);
-    if (!response || response.includes('?') || response.includes('ERROR')) {
-      await log.warn(`[VINRetriever] Failed to set header ${header}`);
+    try {
+      // Basic configuration commands
+      const commands = [
+        { cmd: 'ATE0', delay: 100, desc: 'Echo off' },
+        { cmd: 'ATL0', delay: 100, desc: 'Linefeeds off' },
+        { cmd: 'ATS0', delay: 100, desc: 'Spaces off' },
+        { cmd: 'ATH1', delay: 100, desc: 'Headers on' },
+        { cmd: 'ATCAF1', delay: 100, desc: 'Formatting on' },
+        {
+          cmd: this.isJ1939 ? 'ATSP10' : 'ATSP0',
+          delay: 200,
+          desc: 'Set protocol',
+        },
+      ];
+
+      if (this.isJ1939) {
+        // J1939 specific configuration
+        commands.push(
+          {
+            cmd: `ATSH${VINRetriever.J1939_HEADERS.REQUEST}`,
+            delay: 100,
+            desc: 'Set header',
+          },
+          {
+            cmd: VINRetriever.J1939_HEADERS.FLOW_CONTROL,
+            delay: 100,
+            desc: 'Set flow control',
+          },
+          { cmd: 'ATFCSD300000', delay: 100, desc: 'Set flow control data' },
+          { cmd: 'ATFCSM1', delay: 100, desc: 'Enable flow control' },
+        );
+      } else if (this.isCan) {
+        // Standard CAN configuration
+        const header = this.ecuResponseHeader || '7E0';
+        commands.push(
+          { cmd: `ATSH${header}`, delay: 100, desc: 'Set header' },
+          { cmd: 'ATFCSH7E0', delay: 100, desc: 'Set flow control header' },
+          { cmd: 'ATFCSD300000', delay: 100, desc: 'Set flow control data' },
+          { cmd: 'ATFCSM1', delay: 100, desc: 'Enable flow control' },
+        );
+      }
+
+      for (const { cmd, delay, desc } of commands) {
+        const response = await this.sendCommand(cmd);
+        if (!response || isResponseError(response)) {
+          void log.warn(`[VINRetriever] Failed to ${desc}: ${response}`);
+          if (cmd === 'ATH1') {
+            throw new Error('Headers must be enabled for VIN retrieval');
+          }
+        }
+        await this.delay(delay);
+      }
+
+      void log.info('[VINRetriever] Adapter configuration complete');
+      this.protocolState = PROTOCOL_STATES.READY;
+      return true;
+    } catch (error) {
+      void log.error('[VINRetriever] Configuration failed:', error);
+      this.protocolState = PROTOCOL_STATES.ERROR;
       return false;
     }
-    return true;
   }
 
-  private async initializeAdapter(): Promise<void> {
-    // Reset and initialize
-    for (const { cmd, delay } of VIN_CONSTANTS.INIT_COMMANDS) {
-      await this.sendCommand(cmd);
-      await this.delay(delay);
+  /**
+   * Process CAN frames from the response
+   */
+  private processCanFrames(response: string): string {
+    void log.debug('[VINRetriever] Processing CAN frames from:', response);
+
+    // Remove any terminators and clean the response
+    const cleanResponse = response.replace(/[\r\n>]/g, '').toUpperCase();
+
+    // For J1939, match frames with the correct header
+    const framePattern = this.isJ1939
+      ? new RegExp(
+          `${VINRetriever.J1939_HEADERS.RESPONSE.replace('0', '')}[0-9A-F]+`,
+          'g',
+        )
+      : /7E8[0-9A-F]+/g;
+
+    const frames = cleanResponse.match(framePattern) || [];
+    void log.debug('[VINRetriever] Found frames:', frames);
+
+    if (frames.length === 0) {
+      void log.warn('[VINRetriever] No valid CAN frames found');
+      return '';
+    }
+
+    // Process and combine frame data
+    const headerLength = this.isJ1939 ? 8 : 3; // J1939 headers are 8 chars, standard CAN 3 chars
+    const combinedData = frames
+      .map(frame => frame.substring(headerLength)) // Remove header
+      .join('');
+
+    void log.debug('[VINRetriever] Combined frame data:', combinedData);
+    return combinedData;
+  }
+
+  /**
+   * Extract and validate VIN from hex data
+   */
+  private extractVinFromHex(hexData: string): string | null {
+    try {
+      void log.debug('[VINRetriever] Extracting VIN from hex:', hexData);
+
+      // J1939 has a different response format, handle it separately
+      const vinHex = this.isJ1939
+        ? hexData // J1939 response is direct VIN data
+        : (() => {
+            // Standard OBD-II format: 49 02 01 [VIN DATA]
+            const vinStart = hexData.indexOf('490201');
+            if (vinStart === -1) {
+              void log.warn('[VINRetriever] No VIN marker (490201) found');
+              return null;
+            }
+            return hexData.substring(vinStart + 6);
+          })();
+
+      if (!vinHex) return null;
+
+      void log.debug('[VINRetriever] VIN hex data:', vinHex);
+
+      // Convert hex to ASCII characters
+      let vin = '';
+      for (let i = 0; i < vinHex.length && vin.length < 17; i += 2) {
+        const hex = vinHex.substring(i, i + 2);
+        const ascii = String.fromCharCode(parseInt(hex, 16));
+        if (/[A-HJ-NPR-Z0-9]/i.test(ascii)) {
+          vin += ascii;
+        }
+      }
+
+      void log.debug('[VINRetriever] Extracted VIN:', vin);
+
+      // Validate VIN format
+      if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) {
+        void log.info('[VINRetriever] Valid VIN found:', vin);
+        return vin;
+      }
+
+      void log.warn('[VINRetriever] Invalid VIN format:', vin);
+      return null;
+    } catch (error) {
+      void log.error('[VINRetriever] Error extracting VIN:', error);
+      return null;
     }
   }
 
-  private async sendVINRequest(): Promise<string | null> {
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      await log.debug(
-        `[VINRetriever] VIN Request Attempt ${attempt}/${this.maxRetries}`,
-      );
+  /**
+   * Retrieves the Vehicle Identification Number
+   * Handles both standard OBD-II and J1939 protocols
+   */
+  public async retrieveVIN(): Promise<string | null> {
+    if (this.ecuState.status !== ECUConnectionStatus.CONNECTED) {
+      void log.error('[VINRetriever] ECU not connected');
+      return null;
+    }
 
+    let attempt = 0;
+    const maxAttempts = 3;
+
+    while (attempt < maxAttempts) {
+      attempt++;
       try {
-        let response = await this.sendCommand('0902');
+        // Configure adapter
+        const configSuccess = await this._configureAdapterForVIN();
+        if (!configSuccess) {
+          void log.error('[VINRetriever] Adapter configuration failed');
+          continue;
+        }
 
-        // Handle initial response patterns
+        // Use raw chunked command for better data handling
+        const response = await this.bluetoothSendCommandRawChunked('0902');
+
         if (!response) {
-          await this.delay(this.retryDelay);
+          void log.warn('[VINRetriever] No response received');
+          await this.delay(DELAYS_MS.RETRY);
           continue;
         }
 
-        // Clean the response
-        response = response.replace(/\r|\n|>|\s/g, '').toUpperCase();
+        // Convert raw chunks to hex string if needed
+        let rawResponse: string;
+        if (Array.isArray(response)) {
+          rawResponse = response
+            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+            .join('');
+        } else {
+          rawResponse = response;
+        }
 
-        // Check for error conditions
-        if (
-          response.includes('NO DATA') ||
-          response.includes('ERROR') ||
-          response.includes('UNABLE') ||
-          response.includes('?')
-        ) {
-          await log.debug(
-            '[VINRetriever] Error response received, retrying...',
-          );
-          await this.delay(this.retryDelay);
+        void log.debug('[VINRetriever] Raw response:', rawResponse);
+
+        // Process frames based on protocol
+        const processedData = this.processCanFrames(rawResponse);
+        if (!processedData) {
+          void log.warn('[VINRetriever] No valid data after processing frames');
+          await this.delay(DELAYS_MS.RETRY);
           continue;
         }
 
-        // Handle multi-frame responses
-        if (response.includes('SEARCHING') || response.endsWith('62')) {
-          await this.delay(500); // Wait for potential multi-frame message
-          response = await this.sendCommand('');
-        }
+        // Extract and validate VIN
+        const vin = this.extractVinFromHex(processedData);
+        if (vin) return vin;
 
-        // Process response
-        const processedResponse = processVINResponse(response);
-        if (processedResponse) {
-          return processedResponse;
-        }
-
-        await this.delay(this.retryDelay);
+        void log.warn(
+          `[VINRetriever] Attempt ${attempt} failed to find valid VIN`,
+        );
+        await this.delay(DELAYS_MS.RETRY);
       } catch (error) {
-        await log.error(`[VINRetriever] Error in attempt ${attempt}:`, error);
-        await this.delay(this.retryDelay);
+        void log.error('[VINRetriever] Error:', error);
+        if (attempt < maxAttempts) await this.delay(DELAYS_MS.RETRY);
       }
     }
 
-    await log.warn('[VINRetriever] Failed to get VIN after all retries');
     return null;
   }
 
-  public async retrieveVIN(): Promise<string | null> {
-    try {
-      const state = getStore();
-      if (!state.activeProtocol || state.status !== 'CONNECTED') {
-        await log.error('[VINRetriever] Not connected or no protocol active');
-        return null;
-      }
-
-      // Initialize adapter
-      await this.initializeAdapter();
-
-      // Set protocol explicitly
-      await this.sendCommand(`ATSP${state.activeProtocol}`);
-      await this.delay(500);
-
-      // Try CAN protocols in order: 11-bit, then 29-bit if needed
-      const protocols = [
-        { header: VIN_CONSTANTS.HEADERS.CAN_11BIT, isExtended: false },
-        { header: VIN_CONSTANTS.HEADERS.CAN_29BIT, isExtended: true },
-      ];
-
-      for (const { header, isExtended } of protocols) {
-        // Configure flow control first
-        await this.configureFlowControl(isExtended);
-
-        // Set header
-        if (await this.setHeader(header)) {
-          const vinResponse = await this.sendVINRequest();
-          if (vinResponse) {
-            try {
-              const vin = decodeVINResponse(vinResponse);
-              if (vin) {
-                await log.info(
-                  `[VINRetriever] Successfully retrieved VIN: ${vin}`,
-                );
-                return vin;
-              }
-            } catch (e) {
-              await log.error('[VINRetriever] Error decoding VIN response:', e);
-            }
-          }
-        }
-
-        // Small delay before trying next protocol
-        await this.delay(300);
-      }
-
-      await log.warn(
-        '[VINRetriever] Failed to retrieve valid VIN with any protocol configuration',
-      );
-      return null;
-    } catch (error) {
-      await log.error('[VINRetriever] Error retrieving VIN:', error);
-      return null;
-    }
+  /**
+   * Reset the retriever's internal state
+   */
+  public resetState(): void {
+    this.isCan = false;
+    this.isJ1939 = false;
+    this.protocolNumber = PROTOCOL.AUTO;
+    this.protocolType = PROTOCOL_TYPES.UNKNOWN;
+    this.headerFormat = HEADER_FORMATS.UNKNOWN;
+    this.ecuResponseHeader = null;
+    this.protocolState = PROTOCOL_STATES.INITIALIZED;
+    this.isHeaderEnabled = false;
   }
 }

@@ -178,7 +178,28 @@ export const getVIN = async (
   ) => void = defaultLogger,
 ): Promise<string | null> => {
   await logger('debug', 'Getting VIN...');
-  const vinRetriever = new VINRetriever(sendCommand, sendCommandRaw);
+
+  // Create adapter to convert SendCommandRawFunction to SendCommandFunction
+  const adaptedSendCommandRaw: SendCommandFunction = async (
+    cmd: string,
+  ): Promise<string | null> => {
+    const result = await sendCommandRaw(cmd);
+    if (!result) return null;
+    // Convert chunks to string if array, otherwise ensure string type
+    if (Array.isArray(result)) {
+      return result
+        .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+        .join('');
+    }
+    // For non-array results, convert to string if needed
+    if (typeof result === 'object') {
+      return JSON.stringify(result);
+    }
+    return String(result);
+  };
+
+  // Create VINRetriever instance with adapted function
+  const vinRetriever = new VINRetriever(sendCommand, adaptedSendCommandRaw);
   try {
     const vin = await vinRetriever.retrieveVIN();
     await logger('debug', `VIN received: ${vin}`);

@@ -29,7 +29,7 @@ export const waitForStateCondition = (
   condition: (state: ECUState) => boolean,
   timeout: number = 5000,
 ): Promise<void> => {
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<void>(resolve => {
     const timer = setTimeout(() => {
       unsubscribe();
       resolve();
