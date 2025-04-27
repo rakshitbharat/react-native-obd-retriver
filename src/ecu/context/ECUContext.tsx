@@ -378,6 +378,8 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
           );
         }
 
+        log.info(JSON.stringify(getStore()));
+
         await log.info(
           `[ECUContext] ECU Connection successful. Protocol: ${payload.protocolName ?? 'Unknown'} (${payload.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses?.join(', ') ?? 'None'}`,
         );
