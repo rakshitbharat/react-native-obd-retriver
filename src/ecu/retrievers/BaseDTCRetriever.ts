@@ -29,6 +29,7 @@ import type { SendCommandFunction } from '../utils/types';
  *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
  *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
  *   ],
+ *   codes: ["P0143", "P0000"], // Example parsed DTC codes
  *   isCan: true,
  *   protocolNumber: 6, // ISO 15765-4 CAN (11-bit, 500kbps)
  *   ecuAddress: "7E8" // Primary ECU address
@@ -47,6 +48,9 @@ export interface RawDTCResponse {
 
   /** Duplicate of response field for backward compatibility */
   rawBytesResponseFromSendCommand: string[][];
+
+  /** Parsed DTC codes */
+  codes: string[];
 
   /** Whether the current protocol is CAN-based */
   isCan: boolean;
@@ -458,6 +462,7 @@ export class BaseDTCRetriever {
       rawResponse: null,
       response: null, // Use null for empty data
       rawBytesResponseFromSendCommand: [], // Use empty array for empty data
+      codes: [], // Initialize with empty array
       isCan: this.isCan,
       protocolNumber: this.protocolNumber,
       ecuAddress: this.ecuAddress ?? undefined, // Use undefined if null
@@ -577,6 +582,7 @@ export class BaseDTCRetriever {
           response: result.response,
           // Ensure rawBytesResponseFromSendCommand matches the structure of `response`
           rawBytesResponseFromSendCommand: result.response ?? [],
+          codes: [], // Initialize with empty array
           isCan: this.isCan,
           protocolNumber: this.protocolNumber,
           ecuAddress: this.ecuAddress ?? undefined,

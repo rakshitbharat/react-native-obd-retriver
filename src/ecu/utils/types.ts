@@ -5,6 +5,14 @@ import type { RawDTCResponse } from '../retrievers/BaseDTCRetriever';
 export { RawDTCResponse }; // Re-export for convenience
 
 /**
+ * Information about the OBD adapter itself.
+ */
+export interface AdapterInfo {
+  /** Adapter voltage reading, if available (e.g., "12.3V"). */
+  voltage: string | null;
+}
+
+/**
  * Action types for ECU state management
  *
  * These constants define all possible actions that can be dispatched
