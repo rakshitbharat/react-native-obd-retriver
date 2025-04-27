@@ -13,7 +13,10 @@ import type { ServiceMode } from './types';
 import type { SendCommandFunction } from '../utils/types';
 
 interface ChunkedResponse {
-  data: Uint8Array[];
+  chunks: Array<{ [key: number]: number }>;
+  command: string;
+  totalBytes: number;
+  rawResponse: number[][];
 }
 
 type SendCommandRawFunction = (
@@ -333,13 +336,14 @@ export class VINRetriever {
         } else if (Array.isArray(response)) {
           // Handle array of bytes
           rawResponse = response
-            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+            .map((chunk: number[] | Uint8Array) => Buffer.from(chunk).toString('hex').toUpperCase())
             .join('');
-        } else if (response instanceof Object && 'data' in response) {
-          // Handle ChunkedResponse type with data property
+        } else if (response instanceof Object && 'chunks' in response) {
+          // Handle ChunkedResponse type
           const chunkedResponse = response as ChunkedResponse;
-          rawResponse = chunkedResponse.data
-            .map(chunk => Buffer.from(chunk).toString('hex').toUpperCase())
+          // Convert raw response array to hex string
+          rawResponse = chunkedResponse.rawResponse
+            .map((bytes: number[]) => Buffer.from(bytes).toString('hex').toUpperCase())
             .join('');
         } else {
           void log.warn('[VINRetriever] Unexpected response type:', {
