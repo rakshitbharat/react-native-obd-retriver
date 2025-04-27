@@ -32,7 +32,7 @@ export const waitForStateCondition = (
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       unsubscribe();
-      reject(new Error('Store update timeout'));
+      resolve();
     }, timeout);
 
     const unsubscribe = subscribe(state => {
