@@ -1,3 +1,8 @@
+import {
+  getProtocolConfig,
+  isCanProtocol,
+  isKwpProtocol,
+} from './config/protocolConfigs';
 import { log } from '../../utils/logger';
 import {
   ELM_COMMANDS,
@@ -5,13 +10,25 @@ import {
   PROTOCOL,
   PROTOCOL_DESCRIPTIONS,
   PROTOCOL_TRY_ORDER,
-  STANDARD_PIDS, // Import standard PIDs
 } from '../utils/constants';
 
-import type { SendCommandFunction } from '../utils/types';
+import type {
+  SendCommandFunction,
+  CanProtocolConfig,
+  ProtocolConfig,
+} from '../utils/types';
 
-// Use the standard PID 0100 (Supported PIDs [01-20]) for protocol testing
-const PROTOCOL_TEST_COMMAND = STANDARD_PIDS.SUPPORTED_PIDS_1;
+// Protocol test command with standard PID
+const PROTOCOL_TEST_COMMAND = '0100'; // Get supported PIDs [01-20]
+
+/**
+ * Type guard to check if a protocol config is a CAN protocol config
+ */
+function isCanProtocolConfig(
+  config: ProtocolConfig | null,
+): config is ProtocolConfig & CanProtocolConfig {
+  return config !== null && 'flowControlHeader' in config && 'header' in config;
+}
 
 /**
  * Manages OBD protocol detection, initialization, and communication setup
@@ -93,11 +110,7 @@ export class ProtocolManager {
       '[ProtocolManager] Querying current protocol number (ATDPN)...',
     );
     try {
-      // Use a moderate timeout for protocol query
-      const response = await this.sendCommand(
-        ELM_COMMANDS.GET_PROTOCOL_NUM,
-        2000,
-      );
+      const response = await this.sendCommand(ELM_COMMANDS.GET_PROTOCOL_NUM);
       const protocolNum = this.extractProtocolNumber(response);
       if (protocolNum !== null) {
         await log.debug(
@@ -125,28 +138,55 @@ export class ProtocolManager {
     const upper = response.toUpperCase().trim();
 
     // More generous validation including initial response formats
+    // and adapter-specific patterns like command+62
     return (
       upper.includes('41') || // Standard OBD response
       upper.includes('7E8') || // CAN ECU address
       upper.includes('7E9') || // Additional CAN ECU
       upper.includes('7E0') || // More CAN addresses
       upper.includes('007F') || // Valid PID response pattern
-      upper.includes('7FFFFF') // Common response pattern for 0100
+      upper.includes('7FFFFF') || // Common response pattern for 0100
+      upper.includes('0100') || // Raw command echo is valid during init
+      upper.includes('62') || // ELM327 v1.5+ acknowledgment pattern
+      (upper.endsWith('62') && upper.length >= 4) // Command echo with 62 suffix is valid during init
+    );
+  }
+
+  private isCommandSuccessful(
+    command: string,
+    response: string | null,
+  ): boolean {
+    if (!response) return false;
+    const upper = response.toUpperCase().trim();
+
+    // Check for command echo with 62 suffix (e.g., "ATE062")
+    if (upper === `${command}62`) return true;
+
+    // Standard success patterns
+    return (
+      upper.includes('OK') ||
+      upper.includes(command) || // Command echo
+      upper.includes('ELM') ||
+      upper.includes('ATZ') ||
+      upper.includes('SEARCHING') ||
+      upper.includes('CONNECTING') ||
+      upper.includes('BUS INIT') ||
+      upper.includes('BUS') ||
+      // Additional valid patterns from old code
+      (upper.includes('41') && !upper.includes('ERROR')) || // Valid OBD response
+      (upper.includes('7E') && upper.length >= 4) || // Valid CAN response
+      (upper.endsWith('62') && upper.length >= 4) // Valid command acknowledgment
     );
   }
 
   private async sendProtocolTestCommand(
     maxRetries: number = 3,
-    timeout: number = 5000,
   ): Promise<string | null> {
     let attempts = 0;
     let lastResponse: string | null = null;
 
     while (attempts < maxRetries) {
-      const testResponse = await this.sendCommand(
-        PROTOCOL_TEST_COMMAND,
-        timeout,
-      );
+      const testResponse = await this.sendCommand(PROTOCOL_TEST_COMMAND);
       lastResponse = testResponse;
 
       if (!testResponse) {
@@ -157,10 +197,10 @@ export class ProtocolManager {
 
       const upper = testResponse.toUpperCase();
 
-      // If we get SEARCHING, wait longer and retry
-      if (upper.includes('SEARCHING')) {
+      // If we get SEARCHING or command+62 pattern, retry
+      if (upper.includes('SEARCHING') || upper.endsWith('62')) {
         await log.debug(
-          `[ProtocolManager] Got SEARCHING response on attempt ${attempts + 1}, retrying...`,
+          `[ProtocolManager] Got SEARCHING/62 response on attempt ${attempts + 1}, retrying...`,
         );
         await this.delay(DELAYS_MS.COMMAND_MEDIUM);
         attempts++;
@@ -184,6 +224,11 @@ export class ProtocolManager {
 
       attempts++;
       await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // Consider command+62 responses as potentially successful
+    if (lastResponse && lastResponse.endsWith('62')) {
+      return lastResponse;
     }
 
     // If our last response was somewhat valid but didn't match strict criteria
@@ -211,10 +256,12 @@ export class ProtocolManager {
     // Step 1: Try Auto Protocol (ATSP0) first, includes verification
     try {
       await log.debug('[ProtocolManager] Trying ATSP0 (Auto)...');
+      // Set initial timing configuration for auto protocol
+      await this.setInitialTimingAndProtocol(PROTOCOL.AUTO);
+
       const autoSetResponse = await this.sendCommand(
         ELM_COMMANDS.AUTO_PROTOCOL,
-        5000,
-      ); // Timeout for ATSP0
+      );
       await this.delay(DELAYS_MS.COMMAND_MEDIUM);
 
       // More liberal response validation helper
@@ -233,15 +280,21 @@ export class ProtocolManager {
           upper.includes('CONNECTING') ||
           upper.includes('BUS')
         ) {
-          await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2); // Double the delay for auto protocol
+          // Double the delay for auto protocol
+          await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2);
 
-          const verifyResponse = await this.sendProtocolTestCommand(4, 8000); // More retries and longer timeout
+          // Additional initialization for auto protocol
+          await this.sendCommand('ATH1');
+          await this.sendCommand('ATCAF1');
+          await this.delay(DELAYS_MS.COMMAND_MEDIUM);
 
+          const verifyResponse = await this.sendProtocolTestCommand(4);
           if (verifyResponse) {
             const protocolNum = await this.getCurrentProtocolNumber();
             if (protocolNum !== null && protocolNum !== PROTOCOL.AUTO) {
               await log.info(
-                `[ProtocolManager] Auto protocol verified with response: ${verifyResponse}`,
+                '[ProtocolManager] Auto protocol verified with response:',
+                verifyResponse,
               );
               const protocolName =
                 PROTOCOL_DESCRIPTIONS[protocolNum] ?? `Protocol ${protocolNum}`;
@@ -250,37 +303,22 @@ export class ProtocolManager {
           }
         }
       }
-      // Close protocol if auto failed, before trying manual
-      try {
-        await log.debug(
-          '[ProtocolManager] Closing protocol after failed auto-attempt (ATPC)...',
-        );
-        // Remove timeout from ATPC command
-        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
-        await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
-      } catch {
-        /* Ignore cleanup error */
-      }
+
+      // Reset protocol if auto failed
+      await this.resetProtocol();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ProtocolManager] Error during Auto protocol attempt:', {
         error: errorMsg,
       });
-      try {
-        await log.debug(
-          '[ProtocolManager] Closing protocol after error during auto-attempt (ATPC)...',
-        );
-        await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
-        await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
-      } catch {
-        /* Ignore cleanup error */
-      }
+      await this.resetProtocol();
     }
 
     // Step 2: Manual Protocol Detection if Auto failed
     await log.debug(
       '[ProtocolManager] Auto-detect failed or inconclusive. Starting manual protocol testing...',
     );
+
     for (const protocol of PROTOCOL_TRY_ORDER) {
       if (Number(protocol) === PROTOCOL.AUTO) continue;
 
@@ -292,30 +330,43 @@ export class ProtocolManager {
       );
 
       try {
+        // Reset protocol and set timing before trying new protocol
+        await this.resetProtocol();
+        await this.setInitialTimingAndProtocol(protocol);
+
         // Try Protocol command (ATTP)
         const tryCmd = `${ELM_COMMANDS.TRY_PROTOCOL_PREFIX}${protocolNumHex}`;
         const tryResponse = await this.sendCommand(tryCmd, 10000);
 
-        // More lenient response checking - with null check
+        // More lenient response checking with command+62 pattern
         if (tryResponse) {
-          const upper = tryResponse.toUpperCase();
-          if (
-            upper.includes('OK') ||
-            upper.includes('ELM') ||
-            upper.includes('ATZ') ||
-            upper.includes('SEARCHING') ||
-            upper.includes('4100') ||
-            upper.includes('7E') ||
-            upper.includes('CONNECTING') ||
-            upper.includes('BUS')
-          ) {
+          if (this.isCommandSuccessful(tryCmd, tryResponse)) {
             // Give protocol time to initialize
             await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
+
+            // Configure CAN settings if applicable
+            if (
+              protocol >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K &&
+              protocol <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8
+            ) {
+              await this.sendCommand('ATCAF1');
+              await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+              // Set appropriate CAN headers based on protocol
+              if (
+                protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_500K ||
+                protocol === PROTOCOL.ISO_15765_4_CAN_11BIT_250K
+              ) {
+                await this.sendCommand('ATSH7DF'); // Standard 11-bit broadcast ID
+              } else {
+                await this.sendCommand('ATSH18DB33F1'); // Extended 29-bit broadcast ID
+              }
+              await this.delay(DELAYS_MS.COMMAND_SHORT);
+            }
 
             // Send test command to verify actual communication
             const testResponse = await this.sendProtocolTestCommand();
             if (testResponse && !this.isResponseError(testResponse)) {
-              // Much more lenient test response validation
               const testUpper = testResponse.toUpperCase();
               if (
                 !testUpper.includes('ERROR') &&
@@ -334,19 +385,10 @@ export class ProtocolManager {
             }
           }
         }
-
-        // Close protocol before trying next
-        try {
-          await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
-          await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
-        } catch {}
       } catch (error) {
         await log.error(`[ProtocolManager] Error testing ${protocolName}`, {
           error,
         });
-        try {
-          await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
-        } catch {}
       }
     }
 
@@ -399,75 +441,158 @@ export class ProtocolManager {
       );
       return;
     }
+
+    const config = getProtocolConfig(protocol);
     await log.debug(
       `[ProtocolManager] Configuring settings for protocol: ${protocol}`,
+      {
+        config: config ? 'Found' : 'Not Found',
+      },
     );
+
     try {
-      // Set Adaptive Timing (ATAT1 is generally safe, ATAT2 more aggressive for KWP)
-      // Use ATAT1 as default from ElmProtocolInit basicInit
-      const adaptTimingCmd =
-        protocol === PROTOCOL.ISO_14230_4_KWP ||
-        protocol === PROTOCOL.ISO_14230_4_KWP_FAST
-          ? ELM_COMMANDS.ADAPTIVE_TIMING_2 // Use ATAT2 for KWP
-          : ELM_COMMANDS.ADAPTIVE_TIMING_1; // Use ATAT1 for others
+      // 1. Set Adaptive Timing based on protocol type
+      const adaptiveMode = isKwpProtocol(protocol) ? 2 : 1; // ATAT2 for KWP, ATAT1 for others
       await log.debug(
-        `[ProtocolManager] Setting adaptive timing (${adaptTimingCmd})`,
+        `[ProtocolManager] Setting adaptive timing mode ${adaptiveMode}`,
       );
-      await this.sendCommand(adaptTimingCmd, 1000);
+      await this.sendCommand(
+        adaptiveMode === 2
+          ? ELM_COMMANDS.ADAPTIVE_TIMING_2
+          : ELM_COMMANDS.ADAPTIVE_TIMING_1,
+        1000,
+      );
       await this.delay(DELAYS_MS.COMMAND_SHORT);
 
-      // Set Headers (ON for CAN, OFF otherwise generally)
-      // Protocols 6 through 20 are CAN based
-      const isCan =
-        protocol >= PROTOCOL.ISO_15765_4_CAN_11BIT_500K &&
-        protocol <= PROTOCOL.ISO_15765_4_CAN_29BIT_250K_8;
-      if (isCan) {
+      // 2. Set protocol timeout
+      if (config?.timing?.responseTimeoutMs) {
+        const timeoutHex = Math.floor(config.timing.responseTimeoutMs / 4)
+          .toString(16)
+          .toUpperCase()
+          .padStart(2, '0');
         await log.debug(
-          '[ProtocolManager] Ensuring headers are ON for CAN protocol (ATH1).',
+          `[ProtocolManager] Setting timeout ${config.timing.responseTimeoutMs}ms`,
         );
-        await this.sendCommand(ELM_COMMANDS.HEADERS_ON, 1000);
+        await this.sendCommand(
+          `${ELM_COMMANDS.SET_TIMEOUT}${timeoutHex}`,
+          1000,
+        );
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      }
+
+      // 3. Configure protocol-specific settings
+      if (isCanProtocol(protocol)) {
+        if (isCanProtocolConfig(config)) {
+          await this.configureCanProtocol(config);
+        } else {
+          await log.warn(
+            '[ProtocolManager] CAN protocol detected but config missing CAN settings',
+          );
+          await this.configureBasicCanSettings();
+        }
       } else {
+        // Non-CAN protocols typically work better with headers OFF
         await log.debug(
-          '[ProtocolManager] Ensuring headers are OFF for non-CAN protocol (ATH0).',
+          '[ProtocolManager] Configuring non-CAN protocol settings',
         );
         await this.sendCommand(ELM_COMMANDS.HEADERS_OFF, 1000);
-      }
-      await this.delay(DELAYS_MS.COMMAND_SHORT);
-
-      // Set Timeout (ATST) - Use a default moderate value, can be overridden later
-      // Example: ATST64 (100ms in hex)
-      // const timeoutHex = DELAYS_MS.TIMEOUT_NORMAL_MS.toString(16).toUpperCase().padStart(2, '0');
-      // await this.sendCommand(`${ELM_COMMANDS.SET_TIMEOUT}${timeoutHex}`, 1000);
-      // await this.delay(DELAYS_MS.COMMAND_SHORT);
-      // Note: Timeout setting might be protocol specific, complex to generalize here. Let adapter manage with ATAT.
-
-      // CAN Specific configurations (Flow Control, Formatting) - Add if needed
-      if (isCan) {
-        await log.debug(
-          '[ProtocolManager] Ensuring CAN Auto-Formatting is ON (ATCAF1)',
-        );
-        await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 1000); // Enable CAN formatting
         await this.delay(DELAYS_MS.COMMAND_SHORT);
-        // Set default flow control? Done in BaseDTCRetriever configureForProtocol now.
-      } else {
-        // Ensure CAN Auto-Formatting is OFF for non-CAN
-        await log.debug(
-          '[ProtocolManager] Ensuring CAN Auto-Formatting is OFF (ATCAF0)',
-        );
         await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_OFF, 1000);
         await this.delay(DELAYS_MS.COMMAND_SHORT);
       }
 
-      await log.debug(
-        `[ProtocolManager] Basic settings configured for protocol ${protocol}.`,
+      // 4. Protocol-specific initialization commands
+      if (config?.initSequence?.length) {
+        for (const cmd of config.initSequence) {
+          await log.debug(`[ProtocolManager] Protocol init command: ${cmd}`);
+          await this.sendCommand(cmd, 1000);
+          await this.delay(DELAYS_MS.COMMAND_SHORT);
+        }
+      }
+
+      await log.info(
+        '[ProtocolManager] Protocol configuration completed successfully',
       );
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.warn(
         '[ProtocolManager] Error during protocol settings configuration:',
-        { error: errorMsg },
+        {
+          error: errorMsg,
+        },
       );
-      // Continue even if some settings fail?
+    }
+  }
+
+  /**
+   * Configures basic CAN settings when full config is not available
+   */
+  private async configureBasicCanSettings(): Promise<void> {
+    await log.debug('[ProtocolManager] Configuring basic CAN settings');
+
+    // Enable headers and CAN formatting
+    await this.sendCommand(ELM_COMMANDS.HEADERS_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set default flow control
+    const defaultFlowControl = [
+      'ATFCSH7E0', // Default 11-bit flow control header
+      'ATFCSD300000', // Default: BS=0, ST=0ms
+      'ATFCSM1', // Auto mode
+    ];
+
+    for (const cmd of defaultFlowControl) {
+      await log.debug(`[ProtocolManager] Setting default flow control: ${cmd}`);
+      await this.sendCommand(cmd, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+  }
+
+  /**
+   * Configures CAN protocol specific settings
+   */
+  private async configureCanProtocol(
+    config: ProtocolConfig & CanProtocolConfig,
+  ): Promise<void> {
+    await log.debug('[ProtocolManager] Configuring CAN protocol settings', {
+      header: config.header,
+      flowControlHeader: config.flowControlHeader,
+    });
+
+    // Enable headers and CAN formatting
+    await this.sendCommand(ELM_COMMANDS.HEADERS_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+    await this.sendCommand(ELM_COMMANDS.CAN_AUTO_FORMAT_ON, 1000);
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set CAN ID filter if specified
+    if (config.receiveFilter) {
+      await this.sendCommand(`ATCF${config.receiveFilter}`, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // Set flow control
+    const flowControlCommands = [
+      `ATFCSH${config.flowControlHeader}`,
+      'ATFCSD300000', // Default: BS=0, ST=0ms
+      'ATFCSM1', // Auto mode
+    ];
+
+    for (const cmd of flowControlCommands) {
+      await log.debug(`[ProtocolManager] Setting flow control: ${cmd}`);
+      await this.sendCommand(cmd, 1000);
+      await this.delay(DELAYS_MS.COMMAND_SHORT);
+    }
+
+    // Apply any additional format commands
+    if (config.formatCommands?.length) {
+      for (const cmd of config.formatCommands) {
+        await log.debug(`[ProtocolManager] Applying format command: ${cmd}`);
+        await this.sendCommand(cmd, 1000);
+        await this.delay(DELAYS_MS.COMMAND_SHORT);
+      }
     }
   }
 
@@ -479,14 +604,57 @@ export class ProtocolManager {
 
   private isResponseError(response: string): boolean {
     if (!response) return true;
+
+    // Common error patterns found in both old and new implementations
     const errorPatterns = [
       'ERROR',
       'UNABLE TO CONNECT',
       'NO DATA',
       'CAN ERROR',
+      'BUS ERROR',
+      'BUFFER FULL',
+      'BUS INIT: ERROR',
+      'DATA ERROR',
+      'STOPPED',
+      '?',
     ];
-    return errorPatterns.some(pattern =>
-      response.toUpperCase().includes(pattern),
-    );
+
+    const upper = response.toUpperCase();
+    return (
+      errorPatterns.some(pattern => upper.includes(pattern)) ||
+      upper === '010062'
+    ); // Special case: bare command echo with 62 suffix is considered an error
+  }
+
+  private async setInitialTimingAndProtocol(protocol: PROTOCOL): Promise<void> {
+    // Set timeout to 4*62ms (~250ms) which is more reliable for initialization
+    await this.sendCommand('ATST62');
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set response timeout multiplier for slow ECUs (00 = no timeout)
+    await this.sendCommand('ATAT0');
+    await this.delay(DELAYS_MS.COMMAND_SHORT);
+
+    // Set the protocol but allow searching
+    const protocolHex = protocol.toString(16).toUpperCase();
+    await this.sendCommand(`ATSP${protocolHex}`);
+    await this.delay(DELAYS_MS.PROTOCOL_SWITCH * 2); // Double delay for protocol switch
+  }
+
+  private async resetProtocol(): Promise<void> {
+    // Close any active protocol first
+    await this.sendCommand(ELM_COMMANDS.PROTOCOL_CLOSE);
+    await this.delay(DELAYS_MS.PROTOCOL_SWITCH);
+
+    // Reset adapter
+    await this.sendCommand('ATZ');
+    await this.delay(DELAYS_MS.RESET);
+
+    // Base configuration
+    await this.sendCommand('ATE0'); // Echo off
+    await this.sendCommand('ATL0'); // Line feeds off
+    await this.sendCommand('ATS0'); // Spaces off
+    await this.sendCommand('ATH1'); // Headers on
+    await this.delay(DELAYS_MS.COMMAND_MEDIUM);
   }
 }

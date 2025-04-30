@@ -5,6 +5,14 @@ import type { RawDTCResponse } from '../retrievers/BaseDTCRetriever';
 export { RawDTCResponse }; // Re-export for convenience
 
 /**
+ * Information about the OBD adapter itself.
+ */
+export interface AdapterInfo {
+  /** Adapter voltage reading, if available (e.g., "12.3V"). */
+  voltage: string | null;
+}
+
+/**
  * Action types for ECU state management
  *
  * These constants define all possible actions that can be dispatched
@@ -390,8 +398,39 @@ export type SendCommandFunction = (
   options?: number | { timeout?: number }, // Allow number (legacy) or options object for timeout
 ) => Promise<string | null>; // Returns the response string or null on failure/timeout
 
-// --- Types below define configuration structures - derived from JS ElmProtocolInit/Helper ---
-// --- Kept for potential future protocol detail implementation ---
+/**
+ * Represents the response structure containing raw data chunks,
+ * as returned directly by the react-native-bluetooth-obd-manager hook.
+ * This type might differ slightly from the internal ChunkedResponse.
+ */
+export interface BluetoothChunkedResponse {
+  chunks: Uint8Array[];
+  rawResponse?: number[][]; // Optional property
+}
+
+/**
+ * Represents the response structure containing raw data chunks.
+ * This is the type used internally within react-native-obd-retriever.
+ */
+export interface ChunkedResponse {
+  /** Array of raw data chunks received. */
+  chunks: Uint8Array[];
+  /** The command that generated this response. */
+  command: string;
+  /** Optional raw response as array of number arrays (bytes per chunk). */
+  rawResponse?: number[][];
+  /** Total number of bytes received across all chunks. */
+  totalBytes: number;
+}
+
+/**
+ * Type definition for a function that sends a command and returns a raw, chunked response.
+ * This function returns the local ChunkedResponse type.
+ */
+export type SendCommandRawFunction = (
+  command: string,
+  options?: number | { timeout?: number },
+) => Promise<ChunkedResponse>; // Returns the local ChunkedResponse type
 
 /**
  * Configuration for adaptive timing in OBD communication

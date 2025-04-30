@@ -6885,6 +6885,13 @@ ob1@0.82.1:
   dependencies:
     flow-enums-runtime "^0.0.6"
 
+obd-raw-data-parser@^1.0.25:
+  version "1.0.25"
+  resolved "https://registry.yarnpkg.com/obd-raw-data-parser/-/obd-raw-data-parser-1.0.25.tgz#019d87418a17abd7db5ae273c752993c1cbe9569"
+  integrity sha512-jhtW6GmC5ZwXsQaCRemZnyYBjB6b+nEYUMb18VCOkfVp0aR7NgKTN2H9isksnKMi9avqjv1Te9ZsxeM+KVSLQA==
+  dependencies:
+    text-encoding "^0.7.0"
+
 object-assign@^4.1.1:
   version "4.1.1"
   resolved "https://registry.yarnpkg.com/object-assign/-/object-assign-4.1.1.tgz#2109adc7965887cfc05cbbd442cac8bfbb360863"

@@ -6,25 +6,21 @@ import React, {
   type ReactNode,
   type FC,
   useEffect,
+  useRef, // Import useRef
 } from 'react';
+// Import the correct function name from the hook
 import { useBluetooth } from 'react-native-bluetooth-obd-manager';
-import type { ExtendedPeripheral } from '../utils/types';
-
 import { log } from '../../utils/logger';
-// Import connectionService functions
+// Import necessary items from connectionService and ElmEcuConnector
 import {
-  connectToECU,
+  // connectToECU, // Removed incorrect import
   getAdapterInfo,
-  // Remove disconnectFromECU from import since it's unused
-  getVehicleVIN,
-  clearVehicleDTCs,
-  getRawDTCs, // Used by Raw DTC wrappers below
+  getVIN, // Corrected import name
+  clearDTCs, // Corrected import name
+  getDTCs, // Corrected import name
 } from '../services/connectionService';
-import {
-  OBD_MODE,
-  ECUConnectionStatus,
-  type PROTOCOL,
-} from '../utils/constants';
+import { ElmEcuConnector } from '../services/ElmEcuConnector'; // Import the connector
+import { OBD_MODE, ECUConnectionStatus, PROTOCOL } from '../utils/constants';
 import { ECUActionType } from '../utils/types';
 
 import { initialState, ecuReducer } from './ECUReducer';
@@ -33,9 +29,18 @@ import type {
   ECUContextValue,
   RawDTCResponse,
   SendCommandFunction,
+  ChunkedResponse,
+  BluetoothChunkedResponse,
+  SendCommandRawFunction, // Keep this type alias for our internal function
   ECUActionPayload,
+  ExtendedPeripheral,
 } from '../utils/types';
-import { ecuStore } from './ECUStore';
+import {
+  ecuStore,
+  getStore,
+  waitForStateCondition,
+  storeConditions,
+} from './ECUStore';
 
 /**
  * React Context for ECU communication
@@ -108,10 +113,27 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(ecuReducer, initialState);
   const {
     sendCommand: bluetoothSendCommand,
+    // Import the function that returns the chunked response object
     sendCommandRawChunked: bluetoothSendCommandRawChunked,
     connectedDevice,
     error,
   } = useBluetooth();
+
+  // Use a ref to hold the connector instance
+  const ecuConnectorRef = useRef<ElmEcuConnector | null>(null);
+
+  // Define a logger function compatible with service/connector options
+  const ecuLogger = useCallback(
+    (
+      level: 'info' | 'warn' | 'error' | 'debug',
+      message: string,
+      data?: unknown,
+    ) => {
+      // Use the imported log object's methods
+      log[level](message, data);
+    },
+    [], // No dependencies, log object is stable
+  );
 
   // Sync local state to store
   useEffect(() => {
@@ -219,34 +241,71 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
   );
 
   // --- Use the raw chunked send command if available ---
-  // This is used for raw command sending, e.g., for AT commands
-  const sendCommandRawChunked = useCallback(
+  // Keep our internal wrapper function named sendCommandRaw
+  const sendCommandRaw = useCallback<SendCommandRawFunction>(
     async (
       command: string,
       timeout?: number | { timeout?: number },
-    ): Promise<string | null> => {
-      // Check Bluetooth connection status before sending
+    ): Promise<ChunkedResponse> => {
+      // Check if the imported chunked function is available
       if (!isBluetoothConnected || !bluetoothSendCommandRawChunked) {
         await log.warn(
-          '[ECUContext] Attempted to send command while Bluetooth disconnected or command function unavailable:',
+          '[ECUContext] Attempted to send raw command while Bluetooth disconnected or chunked function unavailable:',
           { command },
         );
-        // Return null to indicate failure as per SendCommandFunction type
-        return null;
+        throw new Error(
+          'Bluetooth not connected or chunked function unavailable',
+        );
       }
+
       try {
         await log.debug(
           `[ECUContext] Sending raw chunked command via BT hook: ${command}`,
           { timeout },
         );
-        // Pass timeout if provided
-        const response = await bluetoothSendCommandRawChunked(
-          command,
-          // Adapt timeout format for the library
-          typeof timeout === 'number' ? { timeout } : timeout,
+
+        // Call the imported chunked function from the hook
+        const hookResponse: BluetoothChunkedResponse =
+          await bluetoothSendCommandRawChunked(
+            // Use the function from the hook
+            command,
+            typeof timeout === 'number' ? { timeout } : timeout,
+          );
+
+        // Validate the structure received from the hook (using local BluetoothChunkedResponse type)
+        if (!hookResponse || !Array.isArray(hookResponse.chunks)) {
+          await log.error(
+            '[ECUContext] Invalid chunked response structure received from hook',
+            { response: hookResponse },
+          );
+          throw new Error('Invalid chunked response received from hook');
+        }
+
+        // Calculate totalBytes from the received chunks
+        const calculatedTotalBytes = hookResponse.chunks.reduce(
+          (acc, chunk) => acc + chunk.length,
+          0,
         );
-        return response.toString(); // Convert ChunkedResponse to string
+
+        // Construct the response object matching the local ChunkedResponse type (with totalBytes)
+        const response: ChunkedResponse = {
+          // Type is the local ChunkedResponse
+          chunks: hookResponse.chunks,
+          command: command, // Use the command passed into the function
+          totalBytes: calculatedTotalBytes, // Use calculated totalBytes
+          rawResponse: hookResponse.rawResponse, // Copies the optional property
+        };
+
+        await log.debug(
+          `[ECUContext] Received raw response for "${response.command}": ${response.chunks.length} chunks`,
+          // Access totalBytes from the new object
+          response,
+        );
+
+        // Return the newly constructed object which matches the local type definition
+        return response;
       } catch (error: unknown) {
+        // Log and handle errors, re-throw to reject the promise
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         await log.error(
@@ -256,14 +315,15 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
             stack: error instanceof Error ? error.stack : undefined,
           },
         );
-        return null;
+        throw error;
       }
     },
-    [isBluetoothConnected, bluetoothSendCommandRawChunked], // Dependencies: BT connection status and the BT send function
+    // Only include dependencies that can change and affect rendering
+    [isBluetoothConnected, bluetoothSendCommandRawChunked],
   );
 
   // --- Core ECU Connection Logic ---
-  const connectWithECU = async (): Promise<boolean> => {
+  const connectWithECU = useCallback(async (): Promise<boolean> => {
     try {
       await log.debug('[ECUContext] Starting ECU connection process');
       dispatch({ type: ECUActionType.CONNECT_START });
@@ -279,58 +339,61 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         return false;
       }
 
-      const result = await connectToECU(sendCommand);
+      // Instantiate the connector if it doesn't exist, passing options
+      if (!ecuConnectorRef.current) {
+        ecuConnectorRef.current = new ElmEcuConnector({
+          sendCommand: sendCommand,
+          log: ecuLogger, // Pass the compatible logger function
+          // Add other options like onStatusChange if needed
+        });
+      }
+      const connector = ecuConnectorRef.current;
 
-      if (result.success) {
+      // Call the connector's connect method
+      const success = await connector.connectToECU();
+
+      if (success) {
+        // Get connection details from the connector after successful connection
+        const protocol = connector.getCurrentProtocol();
+        const protocolName = connector.getProtocolDescription();
+        const detectedEcus = Array.from(connector.getEcuAddresses()); // Convert Set to Array
+        // Voltage might need to be fetched separately via getAdapterInfo if not part of connect result
+        const adapterInfo = await getAdapterInfo(sendCommand, ecuLogger);
+
         const payload: ECUActionPayload = {
-          protocol: result.protocol ?? null,
-          protocolName: result.protocolName ?? null,
-          voltage: parseVoltage(result.voltage),
-          detectedEcuAddresses: result.detectedEcus ?? [],
+          protocol: protocol ? (protocol as unknown as PROTOCOL) : null,
+          protocolName: protocolName ?? null,
+          voltage: parseVoltage(adapterInfo.voltage), // Use voltage from getAdapterInfo
+          detectedEcuAddresses: detectedEcus ?? [],
         };
 
-        // Dispatch success immediately
         dispatch({ type: ECUActionType.CONNECT_SUCCESS, payload });
 
-        // Wait for store update with timeout
         try {
-          await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              reject(new Error('Store update timeout'));
-            }, 5000); // 5 second timeout
-
-            const unsubscribe = ecuStore.subscribe(() => {
-              const currentState = ecuStore.getState();
-              if (
-                currentState.status === ECUConnectionStatus.CONNECTED &&
-                (currentState.detectedEcuAddresses?.length ?? 0) > 0
-              ) {
-                clearTimeout(timeout);
-                unsubscribe();
-                resolve();
-              }
-            });
-          });
+          await waitForStateCondition(storeConditions.isConnectedWithECUs);
         } catch (timeoutError) {
           await log.warn(
             '[ECUContext] Store update timed out, but connection was successful',
             timeoutError,
           );
-          // Continue anyway since the initial connection was successful
         }
 
+        log.info(JSON.stringify(getStore()));
+
         await log.info(
-          `[ECUContext] ECU Connection successful. Protocol: ${result.protocolName ?? 'Unknown'} (${result.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses?.join(', ') ?? 'None'}`,
+          `[ECUContext] ECU Connection successful. Protocol: ${payload.protocolName ?? 'Unknown'} (${payload.protocol ?? 'N/A'}), ECUs: ${payload.detectedEcuAddresses?.join(', ') ?? 'None'}`,
         );
 
         return true;
       } else {
-        const errorMsg = result.error ?? 'ECU connection process failed.';
+        const errorMsg = 'ECU connection process failed.'; // Connector doesn't return detailed error here
         dispatch({
           type: ECUActionType.CONNECT_FAILURE,
           payload: { error: errorMsg },
         });
         await log.error(`[ECUContext] ECU Connection failed: ${errorMsg}`);
+        // Reset connector ref on failure
+        ecuConnectorRef.current = null;
         return false;
       }
     } catch (error: unknown) {
@@ -348,46 +411,63 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         error: errorMsg,
         stack: error instanceof Error ? error.stack : undefined,
       });
-
-      return false; // Return false instead of throwing
+      // Reset connector ref on exception
+      ecuConnectorRef.current = null;
+      return false;
     }
-  };
+  }, [isBluetoothConnected, sendCommand, dispatch, ecuLogger]); // Add ecuLogger dependency
 
   // --- Core ECU Disconnect Logic ---
   const disconnectFromECU = useCallback(async (): Promise<void> => {
-    if (state.status !== ECUConnectionStatus.CONNECTED) {
+    const connector = ecuConnectorRef.current; // Get connector from ref
+    if (state.status !== ECUConnectionStatus.CONNECTED || !connector) {
+      await log.debug(
+        '[ECUContext] Disconnect called but not connected or connector missing.',
+      );
+      // Ensure state is reset even if not connected formally
+      if (state.status !== ECUConnectionStatus.DISCONNECTED) {
+        dispatch({ type: ECUActionType.DISCONNECT });
+        await log.info(
+          '[ECUContext] Internal ECU state reset to DISCONNECTED (disconnect called when not connected).',
+        );
+      }
+      ecuConnectorRef.current = null; // Clear ref
       return;
     }
     try {
-      await disconnectFromECU(); // Remove sendCommand parameter
+      await log.debug(
+        '[ECUContext] Attempting ECU disconnect via connector...',
+      );
+      await connector.disconnect(); // Call connector's disconnect
       dispatch({ type: ECUActionType.DISCONNECT_SUCCESS });
+      await log.info('[ECUContext] ECU disconnect successful via connector.');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      await log.warn(
-        '[ECUContext] Error during ECU service disconnect (ATPC):',
-        { error: errorMsg },
-      );
-      // Continue with disconnect flow even if ATPC fails
+      await log.warn('[ECUContext] Error during ECU connector disconnect:', {
+        error: errorMsg,
+      });
+      // Continue with disconnect flow even if connector disconnect fails
     } finally {
-      // Reset internal ECU state regardless of ATPC success
+      // Reset internal ECU state regardless of connector success
       dispatch({ type: ECUActionType.DISCONNECT });
+      ecuConnectorRef.current = null; // Clear the connector ref
       await log.info('[ECUContext] Internal ECU state reset to DISCONNECTED.');
       // Important: Let the calling component handle Bluetooth disconnect if necessary.
       // This hook manages ECU state, not the underlying BT connection.
     }
-  }, [state.status, dispatch]); // Depends on sendCommand and ECU state
+  }, [state.status, dispatch]); // Removed ecuConnectorRef from dependencies
 
   // --- Information Retrieval ---
   const getECUInformation = useCallback(async (): Promise<void> => {
-    // Check ECU connection status from our state
-    if (state.status !== ECUConnectionStatus.CONNECTED) {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get ECU info: Not connected to ECU.');
       return;
     }
     try {
       await log.debug('[ECUContext] Attempting to get adapter info...');
-      // Call the service function to get adapter info
-      const info = await getAdapterInfo(sendCommand);
+      // Call the service function to get adapter info, passing the logger
+      const info = await getAdapterInfo(sendCommand, ecuLogger); // Use ecuLogger
 
       // Check if voltage info was successfully retrieved
       if (info.voltage === null || info.voltage === undefined) {
@@ -411,31 +491,35 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         error: errorMsg,
       });
     }
-  }, [sendCommand, state.status, dispatch]); // Depends on sendCommand and ECU state
+  }, [sendCommand, dispatch, ecuLogger]); // Add ecuLogger dependency
 
   // --- Get Active Protocol ---
-  const getActiveProtocol = useCallback((): {
-    protocol: PROTOCOL | null;
-    name: string | null;
-  } => {
-    // Directly return from state
+  const getActiveProtocol = useCallback(() => {
+    const currentState = getStore();
     return {
-      protocol: state.activeProtocol,
-      name: state.protocolName,
+      protocol: currentState.activeProtocol,
+      name: currentState.protocolName,
     };
-  }, [state.activeProtocol, state.protocolName]); // Depends only on state
+  }, []);
 
-  // Only keep raw DTC getter implementations
   const getRawCurrentDTCs =
     useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
+      const currentState = getStore();
+      const connector = ecuConnectorRef.current; // Get connector from ref
+      if (currentState.status !== ECUConnectionStatus.CONNECTED || !connector) {
         await log.warn(
-          '[ECUContext] Cannot get raw current DTCs: Not connected to ECU.',
+          '[ECUContext] Cannot get raw current DTCs: Not connected to ECU or connector missing.',
         );
         return null;
       }
       try {
-        return await getRawDTCs(sendCommand, OBD_MODE.CURRENT_DTC);
+        // Use the corrected function name 'getDTCs', pass connector and logger
+        return await getDTCs(
+          OBD_MODE.CURRENT_DTC,
+          connector,
+          sendCommand,
+          ecuLogger,
+        ); // Use ecuLogger
       } catch (error: unknown) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         await log.error('[ECUContext] Failed to get raw current DTCs:', {
@@ -443,18 +527,26 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         });
         return null;
       }
-    }, [sendCommand, state.status]);
+    }, [sendCommand, ecuLogger]); // Add ecuLogger dependency
 
   const getRawPendingDTCs =
     useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
+      const currentState = getStore();
+      const connector = ecuConnectorRef.current; // Get connector from ref
+      if (currentState.status !== ECUConnectionStatus.CONNECTED || !connector) {
         await log.warn(
-          '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU.',
+          '[ECUContext] Cannot get raw pending DTCs: Not connected to ECU or connector missing.',
         );
         return null;
       }
       try {
-        return await getRawDTCs(sendCommand, OBD_MODE.PENDING_DTC);
+        // Use the corrected function name 'getDTCs', pass connector and logger
+        return await getDTCs(
+          OBD_MODE.PENDING_DTC,
+          connector,
+          sendCommand,
+          ecuLogger,
+        ); // Use ecuLogger
       } catch (error: unknown) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         await log.error('[ECUContext] Failed to get raw pending DTCs:', {
@@ -462,18 +554,26 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         });
         return null;
       }
-    }, [sendCommand, state.status]);
+    }, [sendCommand, ecuLogger]); // Add ecuLogger dependency
 
   const getRawPermanentDTCs =
     useCallback(async (): Promise<RawDTCResponse | null> => {
-      if (state.status !== ECUConnectionStatus.CONNECTED) {
+      const currentState = getStore();
+      const connector = ecuConnectorRef.current; // Get connector from ref
+      if (currentState.status !== ECUConnectionStatus.CONNECTED || !connector) {
         await log.warn(
-          '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU.',
+          '[ECUContext] Cannot get raw permanent DTCs: Not connected to ECU or connector missing.',
         );
         return null;
       }
       try {
-        return await getRawDTCs(sendCommand, OBD_MODE.PERMANENT_DTC);
+        // Use the corrected function name 'getDTCs', pass connector and logger
+        return await getDTCs(
+          OBD_MODE.PERMANENT_DTC,
+          connector,
+          sendCommand,
+          ecuLogger,
+        ); // Use ecuLogger
       } catch (error: unknown) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         await log.error('[ECUContext] Failed to get raw permanent DTCs:', {
@@ -481,32 +581,34 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         });
         return null;
       }
-    }, [sendCommand, state.status]);
+    }, [sendCommand, ecuLogger]); // Add ecuLogger dependency
 
-  // Add getVIN implementation
-  const getVIN = useCallback(async (): Promise<string | null> => {
-    if (state.status !== ECUConnectionStatus.CONNECTED) {
+  const getVINFromECU = useCallback(async (): Promise<string | null> => {
+    const currentState = getStore();
+    if (currentState.status !== ECUConnectionStatus.CONNECTED) {
       await log.warn('[ECUContext] Cannot get VIN: Not connected to ECU.');
       return null;
     }
     try {
-      return await getVehicleVIN(sendCommand, sendCommandRawChunked);
+      // Use the corrected function name 'getVIN', pass logger
+      return await getVIN(sendCommand, sendCommandRaw, ecuLogger); // Use ecuLogger
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       await log.error('[ECUContext] Failed to get VIN:', { error: errorMsg });
       return null;
     }
-  }, [sendCommand, sendCommandRawChunked, state.status]);
+  }, [sendCommand, sendCommandRaw, ecuLogger]); // Add ecuLogger dependency
 
   // Add clearDTCs implementation
-  const clearDTCs = useCallback(
-    async (skipVerification = false): Promise<boolean> => {
+  const clearDTCsFromECU = useCallback(
+    async (): Promise<boolean> => {
       if (state.status !== ECUConnectionStatus.CONNECTED) {
         await log.warn('[ECUContext] Cannot clear DTCs: Not connected to ECU.');
         return false;
       }
       try {
-        return await clearVehicleDTCs(sendCommand, skipVerification);
+        // Use the corrected function name 'clearDTCs', pass logger
+        return await clearDTCs(sendCommand, ecuLogger); // Use ecuLogger
       } catch (error: unknown) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         await log.error('[ECUContext] Failed to clear DTCs:', {
@@ -515,31 +617,31 @@ export const ECUProvider: FC<ECUProviderProps> = ({ children }) => {
         return false;
       }
     },
-    [sendCommand, state.status],
+    [sendCommand, state.status, ecuLogger], // Add ecuLogger dependency
   );
 
-  // Update context value
+  // Update useMemo dependencies
   const contextValue = useMemo<ECUContextValue>(
     () => ({
       state,
       connectWithECU,
       disconnectECU: disconnectFromECU,
-      clearDTCs,
-      getVIN,
+      clearDTCs: clearDTCsFromECU, // Use renamed function
+      getVIN: getVINFromECU, // Use renamed function
       getRawCurrentDTCs,
       getRawPendingDTCs,
       getRawPermanentDTCs,
       getECUInformation,
       getActiveProtocol,
       sendCommand,
-      sendCommandWithResponse: sendCommand,
+      sendCommandWithResponse: sendCommand, // Assuming sendCommand handles responses
     }),
     [
       state,
       connectWithECU,
       disconnectFromECU,
-      clearDTCs,
-      getVIN,
+      clearDTCsFromECU, // Updated dependency
+      getVINFromECU, // Updated dependency
       getRawCurrentDTCs,
       getRawPendingDTCs,
       getRawPermanentDTCs,

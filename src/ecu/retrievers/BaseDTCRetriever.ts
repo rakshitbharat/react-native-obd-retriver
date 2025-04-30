@@ -29,6 +29,7 @@ import type { SendCommandFunction } from '../utils/types';
  *     ["7E8", "43", "02", "01", "43", "00", "00", "00", "00"],
  *     ["7E9", "43", "00", "00", "00", "00", "00", "00", "00"]
  *   ],
+ *   codes: ["P0143", "P0000"], // Example parsed DTC codes
  *   isCan: true,
  *   protocolNumber: 6, // ISO 15765-4 CAN (11-bit, 500kbps)
  *   ecuAddress: "7E8" // Primary ECU address
@@ -47,6 +48,9 @@ export interface RawDTCResponse {
 
   /** Duplicate of response field for backward compatibility */
   rawBytesResponseFromSendCommand: string[][];
+
+  /** Parsed DTC codes */
+  codes: string[];
 
   /** Whether the current protocol is CAN-based */
   isCan: boolean;
@@ -145,10 +149,6 @@ export class BaseDTCRetriever {
     MODE07: '07',
     MODE0A: '0A',
   };
-
-  // Increased timeouts based on JS constants and testing
-  protected static DATA_TIMEOUT = 10000; // For multi-frame reads
-  protected static COMMAND_TIMEOUT = 5000; // Standard command timeout
 
   protected sendCommand: SendCommandFunction;
   protected mode: string;
@@ -462,6 +462,7 @@ export class BaseDTCRetriever {
       rawResponse: null,
       response: null, // Use null for empty data
       rawBytesResponseFromSendCommand: [], // Use empty array for empty data
+      codes: [], // Initialize with empty array
       isCan: this.isCan,
       protocolNumber: this.protocolNumber,
       ecuAddress: this.ecuAddress ?? undefined, // Use undefined if null
@@ -581,6 +582,7 @@ export class BaseDTCRetriever {
           response: result.response,
           // Ensure rawBytesResponseFromSendCommand matches the structure of `response`
           rawBytesResponseFromSendCommand: result.response ?? [],
+          codes: [], // Initialize with empty array
           isCan: this.isCan,
           protocolNumber: this.protocolNumber,
           ecuAddress: this.ecuAddress ?? undefined,
@@ -1020,26 +1022,11 @@ export class BaseDTCRetriever {
    */
   protected async sendCommandWithTiming(
     command: string,
-    timeout?: number,
   ): Promise<string | null> {
-    // Determine timeout based on protocol type and command
-    let effectiveTimeout = timeout ?? BaseDTCRetriever.COMMAND_TIMEOUT; // Default timeout
-
-    // Use longer timeouts for non-CAN protocols, especially for data retrieval commands
-    if (!this.isCan) {
-      effectiveTimeout = timeout ?? BaseDTCRetriever.DATA_TIMEOUT; // Longer default for non-CAN data reads
-      await log.debug(
-        `[${this.constructor.name}] Using longer timeout (${effectiveTimeout}ms) for non-CAN protocol.`,
-      );
-    } else {
-      // For CAN, use standard command timeout unless data timeout is explicitly requested
-      effectiveTimeout = timeout ?? BaseDTCRetriever.COMMAND_TIMEOUT;
-    }
-
     await log.debug(
-      `[${this.constructor.name}] Sending command "${command}" with timeout ${effectiveTimeout}ms`,
+      `[${this.constructor.name}] Sending command "${command}" with adaptive timing`,
     );
-    return await this.sendCommand(command, effectiveTimeout);
+    return await this.sendCommand(command);
   }
 
   /**

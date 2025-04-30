@@ -1,20 +1,23 @@
 import { createSyncStore } from 'react-use-reducer-wth-redux';
 import { initialState, ecuReducer } from './ECUReducer';
 import type { ECUState, ECUAction } from '../utils/types';
+import { ECUConnectionStatus } from '../utils/constants';
 
 export const ecuStore = createSyncStore<ECUState, ECUAction>(
   ecuReducer,
   initialState,
 );
 
-// Add helper functions for store interaction
-export const { dispatch, getState } = ecuStore;
+// Helper functions for store interaction
+export const dispatch = ecuStore.dispatch;
+
+export const getStore = (): ECUState => ecuStore.getState();
 
 export const subscribe = (listener: (state: ECUState) => void) => {
-  let currentState = getState();
+  let currentState = getStore();
 
   return ecuStore.subscribe(() => {
-    const nextState = getState();
+    const nextState = getStore();
     if (nextState !== currentState) {
       currentState = nextState;
       listener(currentState);
@@ -22,17 +25,35 @@ export const subscribe = (listener: (state: ECUState) => void) => {
   });
 };
 
-export const waitForStateUpdate = (
-  predicate: (state: ECUState) => boolean,
-  timeout: number = 2000,
-): Promise<boolean> => {
-  return new Promise(resolve => {
-    const startTime = Date.now();
+export const waitForStateCondition = (
+  condition: (state: ECUState) => boolean,
+  timeout: number = 5000,
+): Promise<void> => {
+  return new Promise<void>(resolve => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve();
+    }, timeout);
+
     const unsubscribe = subscribe(state => {
-      if (predicate(state) || Date.now() - startTime >= timeout) {
+      if (condition(state)) {
+        clearTimeout(timer);
         unsubscribe();
-        resolve(predicate(state));
+        resolve();
       }
     });
   });
+};
+
+// Common state conditions
+export const storeConditions = {
+  isConnected: (state: ECUState) =>
+    state.status === ECUConnectionStatus.CONNECTED,
+
+  hasDetectedECUs: (state: ECUState) =>
+    (state.detectedEcuAddresses?.length ?? 0) > 0,
+
+  isConnectedWithECUs: (state: ECUState) =>
+    state.status === ECUConnectionStatus.CONNECTED &&
+    (state.detectedEcuAddresses?.length ?? 0) > 0,
 };
